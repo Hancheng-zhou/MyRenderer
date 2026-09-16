@@ -1,0 +1,41 @@
+# ===========================================================================
+#  构建输出（由 premake + MSBuild 生成，不入库）
+# ===========================================================================
+/bin/
+/bin-int/
+/x64/
+/ZHC/
+
+# vendor 各库的构建输出
+# 注意：vendor/bin/premake/ 放的是 premake5.exe，这个要入库，所以不能整体忽略 vendor/**/bin
+/vendor/GLad/bin/
+/vendor/GLad/bin-int/
+/vendor/GLFW/bin/
+/vendor/GLFW/bin-int/
+/vendor/stb_image/bin/
+/vendor/stb_image/bin-int/
+/vendor/minifb-0.13.0/build/
+
+# ===========================================================================
+#  Visual Studio 工程文件（由 premake5 重新生成，不入库）
+#  重新生成：vendor\bin\premake\premake5.exe vs2022
+# ===========================================================================
+/.vs/
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+
+# ===========================================================================
+#  编译器 / 链接器中间产物
+# ===========================================================================
+*.obj
+*.pdb
+*.lib
+*.exp
+*.ilk
+*.tlog
+*.recipe
+*.lastbuildstate
+*.exe
+!vendor/bin/premake/premake5.exe
