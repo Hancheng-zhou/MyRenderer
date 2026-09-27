@@ -54,6 +54,10 @@ group "vendor"
 	-- stb_image：图片解码（单头文件 + 一个实现编译单元）
 	include "vendor/stb_image"
 
+	-- ImGui：即时 GUI，用来做调试面板与实时调参。
+	-- 自带精简 GL loader，不依赖 glad，两者可以共存
+	include "vendor/imgui"
+
 	-- 注意：glm 是纯头文件库，没有可编译的源文件，因此不建工程，
 	--       只在下面各工程的 includedirs 中加入 vendor/glm。
 
@@ -131,13 +135,23 @@ project "ZHC"
 		"vendor/GLFW/include",
 		"vendor/GLad/include",
 		"vendor/glm",
+		"vendor/imgui",             -- imgui.h
+		"vendor/imgui/backends",    -- imgui_impl_glfw.h / imgui_impl_opengl3.h
 		"vendor/minifb-0.13.0/include",
 		"vendor/stb_image",
 	}
 
-	links { "GLFW", "GLad", "minifb", "stb_image" }
+	links { "GLFW", "GLad", "minifb", "stb_image", "ImGui" }
 
 	filter "system:windows"
 		links { "opengl32.lib", "winmm.lib", "gdi32.lib", "user32.lib", "shell32.lib", "ole32.lib" }
+		defines
+		{
+			-- glm 的 gtx 扩展（Transform.h 里的 glm::eulerAngleXYZ 就在其中）默认是关闭的，
+			-- 必须显式打开这个宏才能用，否则 gtx 头会直接 #error 报错。
+			-- 它还有个硬性要求：必须早于【任何】glm 头被展开，
+			-- 所以放在工程级 defines 里最省心 —— 不用去关心每个 cpp 的 include 顺序
+			"GLM_ENABLE_EXPERIMENTAL",
+		}
 
 	filter {}

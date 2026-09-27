@@ -14,8 +14,9 @@ public:
 	void Unbind();
 	void AddVertexBuffer(const std::shared_ptr<VertexBuffer>& vertexBuffer);
 	void AddIndexBuffer(const std::shared_ptr<IndexBuffer>& indexBuffer);
-	const std::vector<std::shared_ptr<VertexBuffer>>& GetVertexBuffers() const;
-	const std::shared_ptr<IndexBuffer>& GetIndexBuffer() const;
+	const std::vector<std::shared_ptr<VertexBuffer>>& GetVertexBuffers() const { return m_VertexBuffers; }
+	const std::shared_ptr<IndexBuffer>& GetIndexBuffer() const { return m_IndexBuffer; }
+	uint32_t GetRendererID() const { return m_RendererID; }
 private:
 	uint32_t m_RendererID = 0;
 	uint32_t m_VertexBufferIndex = 0;

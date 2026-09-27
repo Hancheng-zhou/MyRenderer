@@ -225,3 +225,13 @@ CPU 加工顶点（这是你这次的核心诉求）：对 mesh.Vertices() 里�
 验证：立方体转起来、贴图对、遮挡对、WASD + 鼠标可用
 
 
+
+1. Gamma / 颜色空间	线性空间、sRGB、为什么暗部不对	Texture 加 sRGB 选项 + 片元着色器最后一行
+2. Blinn-Phong 光照	反射模型、高光、halfway 向量、光源类型与衰减	片元着色器 + 光源 uniform + 面板
+3. 多物体 + 材质	模型变换、绘制提交、参数打包	新增 Transform、材质概念、改绘制循环
+4. 后处理	全屏 pass、HDR、色调映射、卷积	DrawFullscreenTriangle + 后处理 shader + ping-pong
+5. 阴影贴图	深度复用、光空间矩阵、PCF、bias	深度专用 FBO + 渲染流程必须抽成函数
+6. 法线贴图	切线空间、TBN 矩阵	Vertex 加切线（跨层改动）
+7. PBR	BRDF、能量守恒、IBL	片元着色器 + 材质参数
+8. 延迟渲染	G-Buffer、带宽 vs 光照复杂度	FrameBuffer 支持多附件（MRT）
+
