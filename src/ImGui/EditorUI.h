@@ -35,6 +35,7 @@ public:
 	void Draw(Scene& scene,
 	          std::vector<TextureEntry>& textures,
 	          const FrameBuffer& frameBuffer,
+	          const FrameBuffer& shadowMap,
 	          RenderSettings& settings);
 
 	// 鼠标是否悬停在场景视口上。
@@ -57,6 +58,7 @@ private:
 	                       int objectIndex);
 	void DrawRendererPanel(Scene& scene,
 	                       std::vector<TextureEntry>& textures,
+	                       const FrameBuffer& shadowMap,
 	                       RenderSettings& settings);
 
 	// ---- 面板自己的状态 ----

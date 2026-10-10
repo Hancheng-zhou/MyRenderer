@@ -46,7 +46,7 @@
 #include "Renderer/Shader.h"
 #include "Renderer/TextureLibrary.h"
 #include "Scene/Scene.h"
-
+#include "Renderer/PostProcess.h"
 namespace
 {
 	// -----------------------------------------------------------------------
@@ -70,12 +70,12 @@ namespace
 		if (input.AcceptCameraKeys)
 		{
 			// 三轴顺序 (前后, 上下, 左右) —— 与 Camera::MoveForward/MoveUp/MoveRight 对应
-			if (window.IsKeyPressed(GLFW_KEY_W))            { input.MoveAxis.y += 1.0f; }
-			if (window.IsKeyPressed(GLFW_KEY_S))            { input.MoveAxis.y -= 1.0f; }
-			if (window.IsKeyPressed(GLFW_KEY_D))            { input.MoveAxis.z += 1.0f; }
-			if (window.IsKeyPressed(GLFW_KEY_A))            { input.MoveAxis.z -= 1.0f; }
-			if (window.IsKeyPressed(GLFW_KEY_SPACE))        { input.MoveAxis.x += 1.0f; }
-			if (window.IsKeyPressed(GLFW_KEY_LEFT_CONTROL)) { input.MoveAxis.x -= 1.0f; }
+			if (window.IsKeyPressed(GLFW_KEY_W))            { input.MoveAxis.z += 1.0f; }
+			if (window.IsKeyPressed(GLFW_KEY_S))            { input.MoveAxis.z -= 1.0f; }
+			if (window.IsKeyPressed(GLFW_KEY_D))            { input.MoveAxis.x += 1.0f; }
+			if (window.IsKeyPressed(GLFW_KEY_A))            { input.MoveAxis.x -= 1.0f; }
+			if (window.IsKeyPressed(GLFW_KEY_SPACE))        { input.MoveAxis.y += 1.0f; }
+			if (window.IsKeyPressed(GLFW_KEY_LEFT_CONTROL)) { input.MoveAxis.y -= 1.0f; }
 		}
 
 		input.Fast       = window.IsKeyPressed(GLFW_KEY_LEFT_SHIFT) ||
@@ -137,7 +137,7 @@ int main()
 		                           static_cast<int32_t>(window.GetHeight()));
 
 		// 清屏色是 GL 状态而不是每帧的命令，设一次就够
-		RenderCommand::SetClearColor(glm::vec4(0.09f, 0.09f, 0.11f, 1.0f));
+		RenderCommand::SetClearColor(glm::vec4(0.005f, 0.005f, 0.008f, 1.0f));
 
 		// 规则 4：ImGuiLayer 必须晚于 Window ——
 		// 它的平台后端会接管 Window 已经装好的回调，顺序反了 ImGui 就收不到输入
@@ -148,12 +148,37 @@ int main()
 		// 场景先渲染到 FBO，再由 ImGui 当成纹理显示出来。
 		// 这一步不只是"换个地方画"：一旦画面经过 FBO，就能在它与屏幕之间
 		// 插入后处理（bloom / 色调映射 / SSAO ...）
-		FrameBuffer frameBuffer(window.GetWidth(), window.GetHeight());
+		// 【shadow map 必须是正方形】
+		// 正交盒是 2*Extent × 2*Extent 的正方形（见 SceneRenderer::
+		// ComputeLightSpaceMatrix），贴图也得是正方形 —— 否则 x / y 方向
+		// 一个纹素覆盖的世界尺寸不相等，软阴影的"圆盘"投到世界上会变成椭圆，
+		// 半影在竖直方向被拉长，锯齿纹理也是各向异性的。
+		// 之前是 1920x1080 配 8x8 的正交盒，两个方向差了 1.78 倍
+		FrameBufferSpec shadowSpec;
+		shadowSpec.Width = 2048;
+		shadowSpec.Height = 2048;
+		shadowSpec.DepthOnly = true;
+		FrameBuffer shadowMap(shadowSpec);
+
+		FrameBufferSpec sceneSpec;
+		sceneSpec.Width = window.GetWidth();
+		sceneSpec.Height = window.GetHeight();
+		sceneSpec.DepthOnly = false;
+		sceneSpec.ColorFormat = TextureFormat::RGBA16F;
+		FrameBuffer sceneBuffer(sceneSpec);
+
+		FrameBufferSpec postProcessSpec;
+		postProcessSpec.Width = window.GetWidth();
+		postProcessSpec.Height = window.GetHeight();
+		postProcessSpec.DepthOnly = false;
+		FrameBuffer postProcessBuffer(postProcessSpec);
+		PostProcess postProcess;
+
 
 		// ---- 场景：相机、物体、光源都收在这里 ----
 		// 宽高比取自 FBO 而不是窗口：真正决定画面比例的是渲染目标的尺寸
-		const float initialAspect = frameBuffer.GetHeight() > 0
-			? static_cast<float>(frameBuffer.GetWidth()) / static_cast<float>(frameBuffer.GetHeight())
+		const float initialAspect = sceneBuffer.GetHeight() > 0
+			? static_cast<float>(sceneBuffer.GetWidth()) / static_cast<float>(sceneBuffer.GetHeight())
 			: 16.0f / 9.0f;
 
 		Scene scene(glm::vec3(0.0f, 0.0f, 3.0f),   // 相机位置：Z 轴正方向 3 处
@@ -180,15 +205,21 @@ int main()
 			{
 				cameraController.OnScroll(yOffset);
 			});
-		window.SetResizeCallback([&scene, &frameBuffer](uint32_t width, uint32_t height)
+		// 【两个 FBO 都要捕获，都要 Resize】
+		// 只改 sceneBuffer 的话：窗口拉大之后 postProcessBuffer 还是旧尺寸，
+		// 后处理 pass 按旧尺寸渲染（视口取自 postProcessBuffer），
+		// 最终画面的分辨率停在改窗口前那一刻。症状是"糊"而不是"错位"，
+		// 很容易被当成"窗口缩放本来就这样"
+		window.SetResizeCallback([&scene, &sceneBuffer, &postProcessBuffer](uint32_t width, uint32_t height)
 			{
 				// 回调参数已经是 framebuffer 尺寸（像素）。
 				// FBO 尺寸和相机宽高比必须一起更新，少改一个画面就会拉伸
-				frameBuffer.Resize(width, height);
+				sceneBuffer.Resize(width, height);
+				postProcessBuffer.Resize(width, height);
 
 				// 这里读 FBO 的尺寸而不是回调参数：窗口最小化时 FBO 会拒绝变成 0，
 				// 相机的宽高比也该跟着保持原样
-				scene.GetCamera().SetViewportSize(frameBuffer.GetWidth(), frameBuffer.GetHeight());
+				scene.GetCamera().SetViewportSize(sceneBuffer.GetWidth(), sceneBuffer.GetHeight());
 			});
 		window.SetKeyCallback([&window, &cameraController](int key, int action)
 			{
@@ -235,13 +266,13 @@ int main()
 		std::printf("[Camera] 1-4=recall view  F1-F4=save current view  5=startup view\n");
 
 		// ---- 一次性资源：全部在循环之外 ----
-		Shader shader("assets/shaders/Basic.glsl");
-		shader.Bind();
+		Shader depthShader("assets/shaders/ShadowDepth.glsl");
+		Shader basicShader("assets/shaders/PCSS.glsl");
+		basicShader.Bind();
 		// 每帧都会变的 uniform（u_ViewProjection / u_Model / ...）放到循环里设，
 		// 这里只设全程不变的。u_Texture 是"采样器读哪个纹理单元"，固定为 0
-		shader.SetFloat4("u_Color", glm::vec4(1.0f));
-		shader.SetInt("u_Texture", 0);
-
+		basicShader.SetFloat4("u_Color", glm::vec4(1.0f));
+		basicShader.SetInt("u_Texture", 0);
 		// ---- 扫描纹理目录 ----
 		TextureSpec colorSpec;
 		colorSpec.SRGB      = true;                      // 颜色贴图必须做 sRGB 解码
@@ -266,8 +297,19 @@ int main()
 			};
 
 		// ---- 往场景里放东西 ----
-		// 两个物体共享同一份几何：只上传一份 VBO/VAO，两个 draw call 复用它
-		auto cubeMesh = std::make_shared<Mesh>(Mesh::CreateCube(1.0f));
+		//
+		// 共享几何：只上传一份 VAO / VBO / EBO，多个 draw call 复用它。
+		//
+		// 【配方和几何从同一份 desc 出来】这是刻意的：只要手写一句
+		// "Geometry = 某个 mesh"，物体就会保留默认配方（Cube 1.0），
+		// 面板于是显示"已同步"却在骗你 —— 不报错，只是不对。
+		// 用 SetSharedGeometry 让两份数据一起设置，这类错位就不可能发生
+		PrimitiveDesc cubeDesc;                     // 默认就是 Cube / 1.0 / 32 / 16
+		PrimitiveDesc sphereDesc;
+		sphereDesc.Type = PrimitiveType::Sphere;    // 其余参数保持默认
+
+		auto cubeMesh   = std::make_shared<Mesh>(Mesh::Create(cubeDesc));
+		auto sphereMesh = std::make_shared<Mesh>(Mesh::Create(sphereDesc));
 
 		// 【AddObject 是按值传参】cube 会被拷贝进场景，之后这里的 cube 和
 		// scene.GetObject(0) 就是两个对象了。所以设置必须在 Add 之前做完；
@@ -277,54 +319,122 @@ int main()
 
 			// 材质参数都是【线性空间】的值。别按美术直觉填灰——
 			// 那是在 sRGB 空间调出来的，放进线性管线会偏暗
-			cube.Geometry      = cubeMesh;
+			cube.Name = "Cube-1";
+			cube.SetSharedGeometry(cubeMesh, cubeDesc);
 			cube.Mat.Ambient   = glm::vec3(0.10f);
 			cube.Mat.Diffuse   = glm::vec3(1.00f);
 			cube.Mat.Specular  = glm::vec3(0.50f);
 			cube.Mat.Shininess = 32.0f;
 			cube.Xform.Position = glm::vec3(0.0f, 0.0f, 0.0f);
 			cube.Xform.Scale    = glm::vec3(0.5f);
-			cube.Mat.AlbedoTexture = findTexture("photo");
-
-			scene.AddObject(cube);
-		}
-
-		{
-			RenderObject cube;
-
-			cube.Geometry      = cubeMesh;               // 同一份几何
-			cube.Mat.Ambient   = glm::vec3(0.10f);
-			cube.Mat.Diffuse   = glm::vec3(1.00f);
-			cube.Mat.Specular  = glm::vec3(0.50f);
-			cube.Mat.Shininess = 32.0f;
-			cube.Xform.Position = glm::vec3(1.0f, 0.5f, 0.0f);
-			cube.Xform.Scale    = glm::vec3(0.5f);
 			cube.Mat.AlbedoTexture = findTexture("Checkerboard");
 
 			scene.AddObject(cube);
 		}
+
+		//{
+		//	RenderObject cube;
+		//	cube.Name = "Cube-2";
+		//	cube.SetSharedGeometry(cubeMesh, cubeDesc);   // 同一份几何
+		//	cube.Mat.Ambient   = glm::vec3(0.10f);
+		//	cube.Mat.Diffuse   = glm::vec3(1.00f);
+		//	cube.Mat.Specular  = glm::vec3(0.50f);
+		//	cube.Mat.Shininess = 32.0f;
+		//	cube.Xform.Position = glm::vec3(1.0f, 0.5f, 0.0f);
+		//	cube.Xform.Scale    = glm::vec3(0.5f);
+		//	cube.Mat.AlbedoTexture = findTexture("Checkerboard");
+
+		//	scene.AddObject(cube);
+		//}
 		{
 			RenderObject platform;
-			platform.Geometry = cubeMesh;
+			platform.Name = "Platform-1";
+			platform.SetSharedGeometry(cubeMesh, cubeDesc);
 			platform.Mat.Ambient = glm::vec3(0.10f);
 			platform.Mat.Diffuse = glm::vec3(1.00f);
 			platform.Mat.Specular = glm::vec3(0.50f);
 			platform.Mat.Shininess = 32.0f;
-			platform.Xform.Position = glm::vec3(0.0f, -0.5f, 0.0f);
-			platform.Xform.Scale = glm::vec3(10.0f, 0.1f, 10.0f);
+			// 板厚一半是 0.05，所以顶面在 -0.25 —— 正好和立方体的底面贴合。
+			// 用 -0.5 的话顶面在 -0.45，立方体会悬空 0.2；
+			// 没有阴影时看不出来，有阴影后会非常刺眼
+			platform.Xform.Position = glm::vec3(0.0f, -1.0f, 0.0f);
+			platform.Xform.Scale = glm::vec3(100.0f, 0.1f, 100.0f);
 			platform.Mat.AlbedoTexture = nullptr;
 			scene.AddObject(platform);
 		}
+		for (uint32_t x = 0; x < 1; x++)
+		{
+			for (uint32_t y = 0; y <1; y++)
+			{
+				for (uint32_t z = 0; z < 1; z++)
+				{
+					RenderObject sphere;
+					sphere.Name = "Sphere";
+					sphere.SetSharedGeometry(sphereMesh, sphereDesc);
 
+					sphere.Mat.Ambient = glm::vec3(0.10f);
+					sphere.Mat.Diffuse = glm::vec3(1.00f);
+					sphere.Mat.Specular = glm::vec3(0.50f);
+					sphere.Mat.Shininess = 32.0f;
+					sphere.Xform.Position = glm::vec3(1.0f+x*0.25f, 0.0f+y*0.25f, 0.0f+z*0.25f);
+
+					// CreateSphere(1.0) 的半径是 1.0（直径 2）。缩到 0.25 之后直径 0.5，
+					// 正好和 Cube-1（1.0 边长 × 0.5 缩放）一样大
+					sphere.Xform.Scale = glm::vec3(0.1f);
+					sphere.Mat.AlbedoTexture = nullptr;
+
+					scene.AddObject(sphere);
+
+				}
+
+			}
+		}
+		//{
+		//	RenderObject sphere;
+		//	sphere.Name = "Sphere-1";
+		//	sphere.SetSharedGeometry(sphereMesh, sphereDesc);
+
+		//	sphere.Mat.Ambient   = glm::vec3(0.10f);
+		//	sphere.Mat.Diffuse   = glm::vec3(1.00f);
+		//	sphere.Mat.Specular  = glm::vec3(0.50f);
+		//	sphere.Mat.Shininess = 32.0f;
+
+		//	// 【位置必须在视锥内】原来写的 (5, 5, 0) 从相机 (0,0,3) 望过去
+		//	// 偏轴约 67 度，而 45 度垂直视场只有 22.5 度半角 ——
+		//	// 即使 mesh 改对了也看不见它。
+		//	// 摆在 Cube-1 左边，两个形状并排好对比
+		//	sphere.Xform.Position = glm::vec3(-1.3f, 0.0f, 0.0f);
+
+		//	// CreateSphere(1.0) 的半径是 1.0（直径 2）。缩到 0.25 之后直径 0.5，
+		//	// 正好和 Cube-1（1.0 边长 × 0.5 缩放）一样大
+		//	sphere.Xform.Scale = glm::vec3(0.25f);
+		//	sphere.Mat.AlbedoTexture = nullptr;
+
+		//	scene.AddObject(sphere);
+		//}
 		// ---- 光源 ----
 		{
 			Light light;
-			light.type = LightType::Point;
-			// 位置【不能放在原点】：那里正是立方体中心，
-			// L = lightPos - worldPos 会退化成零向量，normalize 之后全是 NaN
-			light.position  = glm::vec3(2.0f, 3.0f, 2.0f);
-			light.color     = glm::vec3(0.9f, 0.0f, 0.0f);
-			light.intensity = 1.0f;
+
+			// 【必须用平行光】SceneRenderer::ComputeLightSpaceMatrix 用的是
+			// glm::ortho（正交投影）—— 那是平行光的做法：它没有位置、只有方向，
+			// 打在场景上的"光柱截面"大小恒定。
+			// 点光要透视投影 + 立方体贴图（6 个面），是另一个量级的复杂度
+			light.type = LightType::Directional;
+
+			// direction 存的是"光【射向】哪边"。斜着射下来影子才有立体感；
+			// 正上方直射会让光照相机的 up 向量退化，也看不出光照方向
+			light.direction = glm::normalize(glm::vec3(-1.0f, -1.5f, -1.0f));
+
+			// 【关键】FindShadowLight 只挑 enabled && castShadow 的灯。
+			// 忘了这一句，shadow pass 会在第一行就 return ——
+			// 深度图是未定义内容、整个阴影分支也不执行，而且【什么都不报】
+			light.castShadow = true;
+
+			light.color = glm::vec3(1.0f, 0.97f, 0.9f);
+			// 平行光不乘衰减（这是对的：无穷远光源没有距离概念），
+			// 所以亮度就是 intensity 本身，和之前的点光不可比
+			light.intensity = 1.5f;
 
 			scene.AddLight(std::move(light));
 		}
@@ -355,14 +465,36 @@ int main()
 			UpdateSceneAnimation(scene, now);
 
 			// ---- 3. 渲染场景到 FBO ----
-			sceneRenderer.RenderScene(scene, frameBuffer, shader, renderSettings);
+			sceneRenderer.RenderShadowPass(scene, shadowMap, depthShader, renderSettings);
+			sceneRenderer.RenderSceneByPCSS(scene, sceneBuffer, shadowMap, basicShader, renderSettings);
 
-			// ---- 4. 构建 UI ----
+			// ---- 4. 后处理 ----
+			//
+			// 【这里没有清屏】全屏三角形覆盖每一个像素，再清一次是纯多出来的
+			// 一次全屏写
+			//
+			// 【关掉后处理时显示 sceneBuffer】这是这一步唯一的验收手段：
+			//   关 -> 看到的是线性值直接当 sRGB 显示，会【明显发暗、发灰】
+			//   开 -> 和改动前完全一样
+			const FrameBuffer* display = &sceneBuffer;
+			if (renderSettings.PostProcessEnabled)
+			{
+				postProcess.Render(sceneBuffer, postProcessBuffer,renderSettings);
+				display = &postProcessBuffer;
+			}
+
+			// ---- 5. 构建 UI ----
 			// 顺序很关键：必须在渲染【之后】。反过来的话 Scene 面板里拿到的
 			// 是上一帧的图像，拖相机会有拖影感
-			editor.Draw(scene, textures, frameBuffer, renderSettings);
+			//
+			// 【必须传 *display，不能传 sceneBuffer】
+			// 传 sceneBuffer 的话，后处理的结果虽然算出来了、也写进了
+			// postProcessBuffer，却【没有任何人看它】—— 表现就是
+			// "后处理开关拖来拖去画面完全不动"，而且不报错、不警告。
+			// 算好了指针却没拿它去用，是这类"管线接对了、最后一步接错"的典型
+			editor.Draw(scene, textures, *display, shadowMap, renderSettings);
 
-			// ---- 5. 提交 ----
+			// ---- 6. 提交 ----
 			// EndFrame 内部依次做：Render() -> 恢复视口为窗口尺寸 -> 清屏 -> RenderDrawData
 			imGuiLayer.EndFrame();
 

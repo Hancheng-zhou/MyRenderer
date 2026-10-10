@@ -235,3 +235,6 @@ CPU 加工顶点（这是你这次的核心诉求）：对 mesh.Vertices() 里�
 7. PBR	BRDF、能量守恒、IBL	片元着色器 + 材质参数
 8. 延迟渲染	G-Buffer、带宽 vs 光照复杂度	FrameBuffer 支持多附件（MRT）
 
+1、Core/Sampling.h生成poisson disks （已完成）
+2、cpu侧 生成poisson disks (已完成)
+3、shader侧 用poisson disks做采样

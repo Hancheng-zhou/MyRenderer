@@ -28,10 +28,24 @@ workspace "ZHC"
 		systemversion "latest"
 		staticruntime "on"
 		buildoptions { "/utf-8" }
+		-- 多核并行编译（/MP）。
+		-- 注意 MSBuild 的 /m 只在【多个项目之间】并行，单个项目内部默认是
+		-- 串行的 —— 本工程 17 个编译单元只会用到 1 个核，其余全空着
+		--
+		-- 用 multiprocessorcompile 而不是老的 flags { "MultiProcessorCompile" }：
+		-- 后者已被 premake 标记为弃用，会在每次生成工程时刷两条警告
+		multiprocessorcompile "on"
 
 	filter "configurations:Debug"
 		runtime "Debug"
 		symbols "on"
+		-- 关掉"编辑并继续"，也就是把 /ZI 换成 /Zi。三个后果都很实在：
+		--   1. /ZI 会【禁用增量链接】—— 链接器会报 LNK4075 忽略 /INCREMENTAL，
+		--      于是每次改完代码都是一次完整链接 + 整份 PDB 重写，
+		--      这正是"改代码后第一次 F5 特别慢"的直接来源
+		--   2. /ZI 的 PDB 更大，F5 时调试器要把它读进来
+		--   3. 本项目从来没用过"调试中改代码"这个能力，纯白付代价
+		editandcontinue "off"
 
 	filter "configurations:Release"
 		runtime "Release"

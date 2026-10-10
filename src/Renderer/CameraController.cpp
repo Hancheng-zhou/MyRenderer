@@ -69,9 +69,9 @@ void CameraController::OnUpdate(const InputState& input, float deltaTime)
 		// 乘上 deltaTime 让移动速度与帧率解耦（开着垂直同步时 ts ≈ 1/60）
 		const float speed = m_MoveSpeed * (input.Fast ? m_FastFactor : 1.0f) * deltaTime;
 
-		m_Camera.MoveForward(axis.x * speed);   // 前后：沿相机视线方向
+		m_Camera.MoveForward(axis.z * speed);   // 前后：沿相机视线方向
 		m_Camera.MoveUp(axis.y * speed);        // 上下：沿世界 Y 轴
-		m_Camera.MoveRight(axis.z * speed);     // 左右：沿相机右方向
+		m_Camera.MoveRight(axis.x * speed);     // 左右：沿相机右方向
 	}
 
 	// ---- 右键旋转的起手判定 ----

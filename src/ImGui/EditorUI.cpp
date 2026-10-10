@@ -2,13 +2,16 @@
 
 #include <algorithm>   // std::min / std::max
 #include <cmath>       // std::acos / std::cos
+#include <cstdint>     // uint32_t
 #include <cstdio>      // std::snprintf
 
 #include <imgui.h>
 #include <glm/gtc/type_ptr.hpp>
 
+#include "Core/PrimitiveDesc.h"   // PrimitiveType / k_PrimitiveTypeNames
 #include "Renderer/Camera.h"
 #include "Renderer/FrameBuffer.h"
+#include "Renderer/Mesh.h"        // Mesh::GetVertexCount（重建由 RenderObject 自己发起）
 #include "Scene/Scene.h"
 
 // ===========================================================================
@@ -209,6 +212,21 @@ void EditorUI::DrawTexturePicker(std::vector<TextureEntry>& entries,
 	ImGui::PopID();
 }
 
+// 一个 uint32_t 的滑块。
+//
+// 【为什么需要这个小工具】ImGui::SliderInt 只接受 int*，而几何的细分
+// 数量是 uint32_t。不要用 reinterpret_cast<int*> 硬转过去：
+// 那违反严格别名规则 —— 能跑，但不保证正确，换个优化等级就可能出错。
+// 走一次显式中转，代价只是两个寄存器
+static void SliderCount(const char* label, uint32_t& value, int minValue, int maxValue)
+{
+	int temp = static_cast<int>(value);
+	if (ImGui::SliderInt(label, &temp, minValue, maxValue))
+	{
+		value = static_cast<uint32_t>(temp);
+	}
+}
+
 // 渲染相关的开关与参数面板。
 //
 // 只开【一个】窗口，用下拉框切换"当前编辑哪个物体"。
@@ -220,6 +238,7 @@ void EditorUI::DrawTexturePicker(std::vector<TextureEntry>& entries,
 //   控件 ID，被当成同一个控件 —— 拖动时互相抢占，数值到底写进谁不确定。
 void EditorUI::DrawRendererPanel(Scene& scene,
                                 std::vector<TextureEntry>& textures,
+                                const FrameBuffer& shadowMap,
                                 RenderSettings& settings)
 {
 	ImGui::SetNextWindowPos(ImVec2(20.0f, 320.0f), ImGuiCond_FirstUseEver);
@@ -231,9 +250,22 @@ void EditorUI::DrawRendererPanel(Scene& scene,
 		return;
 	}
 
-	ImGui::Checkbox("Gamma correct", &settings.GammaCorrect);
-
-	if (ImGui::CollapsingHeader("Material", ImGuiTreeNodeFlags_DefaultOpen))
+	// -----------------------------------------------------------------------
+	//  1. 物体编辑：选物体 → 它的全部属性
+	//
+	//  结构：一个下拉框选物体 → 下面全是【这个物体的】全部属性。
+	//
+	//  "改哪个物体"和"改它的什么"是两个独立的问题：前者由下拉框回答一次，
+	//  后者按 Geometry / Transform / Material 分组，正好对应 RenderObject
+	//  的成员划分。以后加新属性只要多一个折叠头，不用再纠结"这段挂在哪"
+	// -----------------------------------------------------------------------
+	if (scene.GetObjectCount() == 0)
+	{
+		// 明确说"场景是空的"，而不是让下拉框和内容静默消失 ——
+		// 后者会让人以为面板坏了
+		ImGui::TextDisabled("(scene has no objects)");
+	}
+	else
 	{
 		// 物体数量以后会变（运行时加物体），下标每帧都要夹紧，否则越界
 		if (m_SelectedObject >= static_cast<int>(scene.GetObjectCount()))
@@ -241,18 +273,50 @@ void EditorUI::DrawRendererPanel(Scene& scene,
 			m_SelectedObject = 0;
 		}
 
-		// BeginCombo 要的是 const char*，不能直接把 std::string 喂进去
-		char label[32];
-		std::snprintf(label, sizeof(label), "Object %d", m_SelectedObject);
+		// ---- 选物体 ----
+		// BeginCombo 要的是 const char*，不能直接把 std::string 喂进去，所以现拼缓冲。
+		//
+		// 【显示 Name，而不是 "Object 0"】
+		// 场景里三样东西都叫 "Object N" 时，你没法知道自己在改哪一个 ——
+		// 而三个物体常常共享同一份 Mesh，重建只影响被选中的那个。
+		// "改了参数画面不动"很大一部分就是这么来的。
+		// Name 为空就退回编号：手搭场景时很容易忘了设名字，
+		// 那种情况下显示一行空白比显示编号更糟
+		auto makeObjectLabel = [](char* buffer, std::size_t capacity,
+		                          int index, const RenderObject& item)
+		{
+			if (item.Name.empty())
+			{
+				// 把"不可见"标在名字上：一眼看出哪个被关掉了，
+				// 否则关了之后只能一个个点开找
+				std::snprintf(buffer, capacity, "Object %d%s",
+				              index, item.IsVisible ? "" : "  (hidden)");
+			}
+			else
+			{
+				std::snprintf(buffer, capacity, "%s%s",
+				              item.Name.c_str(), item.IsVisible ? "" : "  (hidden)");
+			}
+		};
 
-		if (ImGui::BeginCombo("Target", label))
+		// 预览文字和列表项各用一块缓冲：共用一块虽然也能跑，
+		// 但一旦 ImGui 哪天改成延迟使用这个指针，就会读到循环最后一次的内容
+		char previewLabel[64];
+		makeObjectLabel(previewLabel, sizeof(previewLabel), m_SelectedObject,
+		                scene.GetObject(static_cast<std::size_t>(m_SelectedObject)));
+
+		if (ImGui::BeginCombo("Target", previewLabel))
 		{
 			for (int i = 0; i < static_cast<int>(scene.GetObjectCount()); ++i)
 			{
-				std::snprintf(label, sizeof(label), "Object %d", i);
+				const RenderObject& item = scene.GetObject(static_cast<std::size_t>(i));
+
+				char itemLabel[64];
+				makeObjectLabel(itemLabel, sizeof(itemLabel), i, item);
+
 				const bool isSelected = (i == m_SelectedObject);
 
-				if (ImGui::Selectable(label, isSelected))
+				if (ImGui::Selectable(itemLabel, isSelected))
 				{
 					m_SelectedObject = i;
 				}
@@ -265,14 +329,148 @@ void EditorUI::DrawRendererPanel(Scene& scene,
 			ImGui::EndCombo();
 		}
 
-		if (scene.GetObjectCount() > 0)
+		// 每帧现取。不要跨帧存这个引用 ——
+		// m_SelectedObject 一变它指向别的物体，vector 扩容时更是直接悬空
+		RenderObject& object = scene.GetObject(static_cast<std::size_t>(m_SelectedObject));
+
+		ImGui::Checkbox("Visible", &object.IsVisible);
+
+		// -------------------------------------------------------------------
+		//  几何：物体的"形状"
+		//
+		//  结构：先选"生成什么类型"，再给该类型有意义的参数，最后一步"应用"。
+		//  所有几何共用同一条流程，加形状不用动面板结构
+		// -------------------------------------------------------------------
+		if (ImGui::CollapsingHeader("Geometry", ImGuiTreeNodeFlags_DefaultOpen))
 		{
-			// 每帧现取。不要跨帧存这个引用 ——
-			// m_SelectedObject 一变它指向别的物体，vector 扩容时更是直接悬空
-			RenderObject& object = scene.GetObject(static_cast<std::size_t>(m_SelectedObject));
-			ImGui::Checkbox("Enabled", &object.IsVisible);
-			ImGui::Separator();
-			Material& material = scene.GetObject(static_cast<std::size_t>(m_SelectedObject)).Mat;
+			// ---- 只读信息 ----
+			//
+			// 没有几何的物体会被 SceneRenderer 【静默跳过】：
+			// 画面里什么都没有，也不报错。而"忘了写 object.Geometry = mesh;"
+			// 是极容易犯的错，所以这里用红字明确标出来
+			if (!object.Geometry)
+			{
+				ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
+				                   "No geometry - this object is not rendered");
+			}
+			else
+			{
+				ImGui::Text("Vertices : %u", object.Geometry->GetVertexCount());
+				ImGui::Text("Indices  : %u", object.Geometry->GetIndexCount());
+			}
+
+			// ---- 配方：生成什么 ----
+			//
+			// 改这里只改【数据】，不碰显存；真的重建由下面的按钮触发
+			int type = static_cast<int>(object.Primitive.Type);
+			if (ImGui::Combo("Type", &type, k_PrimitiveTypeNames, k_PrimitiveTypeCount))
+			{
+				object.Primitive.Type = static_cast<PrimitiveType>(type);
+			}
+
+			// ---- 配方：按什么参数生成 ----
+			//
+			// 按类型只显示有意义的参数。和 Light 面板里"平行光不显示 Position"
+			// 是同一个做法：拖了没有任何反应的控件，比不显示更让人困惑
+			if (object.Primitive.Type == PrimitiveType::Sphere)
+			{
+				ImGui::DragFloat("Radius", &object.Primitive.Size, 0.02f, 0.05f, 5.0f, "%.2f");
+
+				// 细分级别用滑块而不是拖数字：范围小、上下限明确，
+				// "往低拖会变成多面体"这件事能直接看见
+				SliderCount("Segments", object.Primitive.Segments, 3, 128);
+				SliderCount("Rings",    object.Primitive.Rings,    2,  64);
+			}
+			else
+			{
+				ImGui::DragFloat("Cube size", &object.Primitive.Size, 0.02f, 0.05f, 5.0f, "%.2f");
+			}
+
+			// ---- 配方 → 几何：刻意拆成【两步】----
+			//
+			//   改参数 = 只改 CPU 侧的数据，不碰显存
+			//   点按钮 = 真的重建 Mesh（新建 VAO / VBO / EBO）
+			//
+			// 【为什么要拆开】原来的写法是"拖一下重建一次"，于是按钮永远
+			// 只能重复一遍拖动已经做过的事，结果完全相同 ——
+			// 看上去就是"Rebuild 无效"。拆开之后按钮有了唯一且明确的语义：
+			// 把当前这份配方应用到几何上。
+			//
+			// 【为什么不让改参数就直接重建】Mesh 的构造是一整套 GL 资源分配 +
+			// 显存上传，拖动过程中每帧执行等于每帧重新分配一次，
+			// 旧的那份还要等 shared_ptr 归零才释放。
+			// 而且"改过但还没应用"这个中间状态本身是有用的信息 ——
+			// 面板能把它显示出来，你才知道眼前这个几何对应的是哪份配方
+			//
+			// 判断收在 RenderObject::IsGeometryPending() 里，面板不自己拼条件：
+			// 否则"什么算待重建"会有两份定义，早晚不一致
+			const bool pending = object.IsGeometryPending();
+
+			// 未应用时把按钮染成醒目色 —— 否则"改了参数忘了点"是完全看不出来的
+			if (pending)
+			{
+				ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.85f, 0.55f, 0.15f, 1.0f));
+			}
+			const bool clicked = ImGui::Button("Rebuild geometry");
+			if (pending)
+			{
+				ImGui::PopStyleColor();
+			}
+
+			if (clicked)
+			{
+				// 重建几何 + 记账（BuiltPrimitive）都在这个函数里，
+				// 调用方不可能只做一半 —— 只换 Geometry 不记账的话，
+				// 面板会永远显示"已同步"，你再也看不到"待应用"
+				object.RebuildGeometry();
+			}
+
+			ImGui::SameLine();
+			if (pending)
+			{
+				// 把"几何现在是什么"摊开说，一眼就知道差在哪
+				ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
+				                   "pending (mesh: %s %.2f)",
+				                   PrimitiveTypeName(object.BuiltPrimitive.Type),
+				                   object.BuiltPrimitive.Size);
+			}
+			else
+			{
+				ImGui::TextDisabled("up to date");
+			}
+		}
+
+		// -------------------------------------------------------------------
+		//  变换：物体在哪儿、多大、朝哪
+		// -------------------------------------------------------------------
+		if (ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen))
+		{
+			ImGui::DragFloat3("Position", glm::value_ptr(object.Xform.Position), 0.05f);
+
+			// Rotation 在数据层存的是【弧度】（glm::eulerAngleXYZ 吃弧度），
+			// 但让人拖一个 -3.14 ~ 3.14 的数值很难用，所以这里转成"度"再显示。
+			//
+			// 【注意】main 里的 UpdateSceneAnimation 每帧都会覆盖 Rotation.y
+			//（那个自转动画），所以拖 Y 看不出变化 —— 那不是 bug。
+			// 想手动摆姿势就拖 X / Z，或者暂时注释掉那个函数里的 Rotation.y
+			glm::vec3 rotationDegrees = glm::degrees(object.Xform.Rotation);
+			if (ImGui::DragFloat3("Rotation", glm::value_ptr(rotationDegrees),
+			                      1.0f, -180.0f, 180.0f, "%.1f deg"))
+			{
+				object.Xform.Rotation = glm::radians(rotationDegrees);
+			}
+
+			// Scale 刻意允许非均匀 —— 顺便验证 GetNormalMatrix()：
+			// 法线矩阵写错的话，拉长之后光照会整个歪掉
+			ImGui::DragFloat3("Scale", glm::value_ptr(object.Xform.Scale), 0.05f, 0.01f, 20.0f);
+		}
+
+		// -------------------------------------------------------------------
+		//  材质：物体的"外观"
+		// -------------------------------------------------------------------
+		if (ImGui::CollapsingHeader("Material", ImGuiTreeNodeFlags_DefaultOpen))
+		{
+			Material& material = object.Mat;
 			
 			// 拖拽速度必须显式给一个小值：DragFloat3 默认 v_speed = 1.0f，
 			// 对 0~1 的颜色来说一像素就跳 1.0，根本没法微调
@@ -292,6 +490,12 @@ void EditorUI::DrawRendererPanel(Scene& scene,
 		}
 	}
 
+	// -----------------------------------------------------------------------
+	//  2. 光源
+	//
+	//  光源【不属于】任何 RenderObject —— 它照的是整个场景，
+	//  所以单独一节放在物体编辑之后，而不是塞进上面那个下拉框里
+	// -----------------------------------------------------------------------
 	if (ImGui::CollapsingHeader("Light", ImGuiTreeNodeFlags_DefaultOpen))
 	{
 		const bool full = scene.GetLightCount() >= Scene::k_MaxLightsCount;
@@ -331,7 +535,7 @@ void EditorUI::DrawRendererPanel(Scene& scene,
 				Light& light = scene.GetLight(i);
 
 				ImGui::Checkbox("Enabled", &light.enabled);
-
+				ImGui::Checkbox("Shadowcast", &light.castShadow);
 				int type = static_cast<int>(light.type);
 				const char* k_TypeNames[] = { "Directional", "Point", "Spot" };
 				if (ImGui::Combo("Type", &type, k_TypeNames, IM_ARRAYSIZE(k_TypeNames)))
@@ -388,17 +592,101 @@ void EditorUI::DrawRendererPanel(Scene& scene,
 		}
 	}
 
+	// -----------------------------------------------------------------------
+	//  3. 阴影
+	//
+	//  放在物体/光源【之后】有实际理由，不只是审美：
+	//  它调的是"整帧怎么算阴影"，和被编辑的物体无关，
+	//  而 Extent / Distance 的意义要对照上面那盏灯的 direction 才看得懂 ——
+	//  先看到灯、再调阴影，顺序和思考顺序一致
+	//
+	//  bias 没有公式（它兜的是数值误差），但软阴影的两个参数有 ——
+	//  它们都挂在"一个纹素的世界尺寸"上，所以下面把那个基准值直接显示出来，
+	//  调参时不用心算
+	// -----------------------------------------------------------------------
+	if (ImGui::CollapsingHeader("Shadow", ImGuiTreeNodeFlags_DefaultOpen))
+	{
+		ImGui::Checkbox("Enabled", &settings.ShadowEnabled);
+
+		// 开了法线偏移之后，bias 只负责兜住极端掠射角，所以上限收到 0.005
+		ImGui::SliderFloat("Bias", &settings.ShadowBias, 0.0f, 0.005f, "%.4f");
+
+		//// 硬边 / 软边对比开关。shader 里判的是"半径 <= 0 就当硬边"，
+		//// 用一个复选框比让人理解"半径 = 0 反而表示硬边"直观
+		//bool hardEdge = (settings.ShadowPCFRadius <= 0);
+		//if (ImGui::Checkbox("Hard edge", &hardEdge))
+		//{
+		//	settings.ShadowPCFRadius = hardEdge ? 0 : 1;
+		//}
+
+		// 过滤半径的【上限】，单位【纹素】。0 = 单次采样的硬边（拿来做 A/B 对比）。
+		//
+		// 【它不等于 PCSS 的实际半径】shader 里每个像素的半径是由
+		// "遮挡物离接收面多远"算出来的，这个值只是给它封顶。
+		// 上限定太小（比如 1）会把 PCSS 完全压平 —— 所有地方糊得一样多，
+		// 接触硬化就看不出来了
+		ImGui::SliderInt("Filter radius cap", &settings.FilterRadius, 0, 64);
+
+		// PCSS 的软度比例（"光源视半径"）。决定"影子能软到什么程度"：
+		// 调大 -> 半影显著变宽；调到接近 0 -> 退化成接近硬边的 PCF。
+		// 用对数刻度：0.005 ~ 0.5 跨两个数量级，线性滑块在小值区间根本拖不动
+		ImGui::SliderFloat("Light size", &settings.ShadowLightSize,
+		                   0.005f, 0.5f, "%.3f", ImGuiSliderFlags_Logarithmic);
+
+		// 取景范围：太小 -> 场景有部分落在视锥外、那部分不出阴影；
+		// 太大 -> 深度精度被摊薄，acne 变严重
+		ImGui::DragFloat("Extent",   &settings.ShadowExtent,   0.5f, 1.0f, 64.0f);
+		ImGui::DragFloat("Distance", &settings.ShadowDistance, 0.5f, 1.0f, 64.0f);
+
+
+		// ---- 把 shadow map 贴出来 ----
+		//
+		// 这是整个功能里最值钱的调试手段：深度值都在 [0,1]，
+		// 直接当灰度图看就很有信息量 ——
+		//   白 = 那个方向没撞到东西（远平面）
+		//   黑 = 离光源近的表面
+		// 一眼就能看出光照相机摆对没有、场景有没有落在视锥里。
+		//
+		// 没有它的话，"影子不对"和"深度图不对"这两种病你分不开
+		const float previewSize = ImGui::GetContentRegionAvail().x;
+		ImGui::Image(
+			reinterpret_cast<ImTextureID>(
+				static_cast<intptr_t>(shadowMap.GetDepthAttachmentID())),
+			ImVec2(previewSize, previewSize),
+			ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));   // V 轴同样要翻
+	}
+
+	// -----------------------------------------------------------------------
+	//  4. 输出
+	//
+	//  后处理是"整帧最后怎么变成能看的照片"，跟物体、灯、阴影都没关系，
+	//  放进任何一节都不合适，所以单独收在末尾
+	// -----------------------------------------------------------------------
+	ImGui::Checkbox("Post process", &settings.PostProcessEnabled);
+	if (settings.PostProcessEnabled)
+	{
+		ImGui::SliderFloat("Exposure", &settings.Exposure, 0.1f, 5.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+		ImGui::Combo("Tone mapping", &settings.TonemapMode, "Off\0Reinhard\0ACES\0");
+
+		bool debugView = (settings.DebugHDRView != 0);
+		if (ImGui::Checkbox("Debug: show >1.0 only", &debugView))
+		{
+			settings.DebugHDRView = debugView ? 1 : 0;
+		}
+	}
+
 	ImGui::End();
 }
 
 void EditorUI::Draw(Scene& scene,
                     std::vector<TextureEntry>& textures,
                     const FrameBuffer& frameBuffer,
+                    const FrameBuffer& shadowMap,
                     RenderSettings& settings)
 {
 	DrawScenePanel(frameBuffer);
 	DrawCameraPanel(scene.GetCamera(), m_ShowDemoWindow);
-	DrawRendererPanel(scene, textures, settings);
+	DrawRendererPanel(scene, textures, shadowMap, settings);
 
 	if (m_ShowDemoWindow)
 	{
