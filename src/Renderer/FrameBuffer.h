@@ -32,6 +32,7 @@ struct FrameBufferSpec
 	uint32_t Width = 1;
 	uint32_t Height = 1;
 	bool DepthOnly = false;
+	bool NeedDepth = true;	
 	TextureFormat ColorFormat = TextureFormat::RGBA8;
 };
 class FrameBuffer

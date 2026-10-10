@@ -13,8 +13,11 @@ public:
 	static void Clear();
 	static void ClearDepth();
 	static void SetCullMode(bool cullFront);
+	static void SetAdditiveBlend(bool enabled);
 	static void BindTexture(uint32_t rendererID, uint32_t slot);
 	static void DrawArrays(const VertexArray& vertexArray, uint32_t vertexCount);
 	static void DrawIndexed(const VertexArray& vertexArray, uint32_t indexCount);
+
+
 };
 

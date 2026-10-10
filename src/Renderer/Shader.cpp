@@ -83,6 +83,24 @@ void Shader::Unbind() const
 
 uint32_t Shader::GetUniformLocation(const std::string& name)
 {
+	// 【必须在查 location 之前把程序绑上】
+	//
+	// 这两件事在 GL 里是【不对称】的：
+	//   glGetUniformLocation(program, name)  按【程序 ID】查，和当前状态无关
+	//   glUniform*(location, value)          作用于【当前绑定的程序】
+	//     （GL 规范原文：operates on the program object that was made part of
+	//       current state by calling UseProgram）
+	//
+	// 也就是：location 是"按 A 程序查出来的"，value 却写进了"当前绑着的 B 程序"。
+	// 只要调用方忘了先 Bind()，值就【静默地写到别的 shader 上】——
+	// 你自己的 uniform 保持默认值 0，不报错、不警告。
+	//
+	// 【这个函数是所有 Set* 的唯一入口】（每个 Set* 第一件事就是调它），
+	// 所以绑在这里等于一次修好全部 12 个 Set*，以后新增的也自动免疫。
+	// 查 location 和写 value 本来就【必须作用在同一个程序上】，
+	// 把这两件事绑在一起是语义上正确的，不是"给 getter 加副作用"
+	glUseProgram(m_RendererID);
+
 	// 命中缓存就直接返回，避免每次设 uniform 都做一次字符串查找
 	const auto it = m_LocationCache.find(name);
 	if (it != m_LocationCache.end())

@@ -51,6 +51,19 @@ void RenderCommand::SetCullMode(bool cullFront)
 	glCullFace(cullFront ? GL_FRONT : GL_BACK);
 }
 
+void RenderCommand::SetAdditiveBlend(bool enabled)
+{
+	if (enabled)
+	{
+		glEnable(GL_BLEND);
+		glBlendFunc(GL_ONE, GL_ONE);
+	}
+	else
+	{
+		glDisable(GL_BLEND);
+	}
+}
+
 void RenderCommand::BindTexture(uint32_t rendererID, uint32_t slot)
 {
 	glActiveTexture(GL_TEXTURE0 + slot);

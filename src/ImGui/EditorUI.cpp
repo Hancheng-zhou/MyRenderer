@@ -11,8 +11,9 @@
 #include "Core/PrimitiveDesc.h"   // PrimitiveType / k_PrimitiveTypeNames
 #include "Renderer/Camera.h"
 #include "Renderer/FrameBuffer.h"
-#include "Renderer/Mesh.h"        // Mesh::GetVertexCount（重建由 RenderObject 自己发起）
+#include "Renderer/Mesh.h"        
 #include "Scene/Scene.h"
+#include "Renderer/PostProcess.h"
 
 // ===========================================================================
 //  这些面板原本写在 main.cpp 的匿名 namespace 里，参数列表一路膨胀到
@@ -237,9 +238,8 @@ static void SliderCount(const char* label, uint32_t& value, int minValue, int ma
 //   更麻烦的是同一窗口里两个同名控件（两个 "Ambient"）会算出完全相同的
 //   控件 ID，被当成同一个控件 —— 拖动时互相抢占，数值到底写进谁不确定。
 void EditorUI::DrawRendererPanel(Scene& scene,
-                                std::vector<TextureEntry>& textures,
-                                const FrameBuffer& shadowMap,
-                                RenderSettings& settings)
+	std::vector<TextureEntry>& textures,
+	const FrameBuffer& shadowMap,const FrameBuffer& bloomMap, RenderSettings& settings)
 {
 	ImGui::SetNextWindowPos(ImVec2(20.0f, 320.0f), ImGuiCond_FirstUseEver);
 	ImGui::SetNextWindowSize(ImVec2(300.0f, 0.0f), ImGuiCond_FirstUseEver);
@@ -657,7 +657,7 @@ void EditorUI::DrawRendererPanel(Scene& scene,
 	}
 
 	// -----------------------------------------------------------------------
-	//  4. 输出
+	//  4. 输出 / 后处理
 	//
 	//  后处理是"整帧最后怎么变成能看的照片"，跟物体、灯、阴影都没关系，
 	//  放进任何一节都不合适，所以单独收在末尾
@@ -669,24 +669,43 @@ void EditorUI::DrawRendererPanel(Scene& scene,
 		ImGui::Combo("Tone mapping", &settings.TonemapMode, "Off\0Reinhard\0ACES\0");
 
 		bool debugView = (settings.DebugHDRView != 0);
-		if (ImGui::Checkbox("Debug: show >1.0 only", &debugView))
+		if (ImGui::Checkbox("Debug: HDR stops", &debugView))
 		{
 			settings.DebugHDRView = debugView ? 1 : 0;
 		}
+		ImGui::Separator();
+		ImGui::Checkbox("Bloom", &settings.BloomEnabled);
+		if (settings.BloomEnabled)
+		{
+			ImGui::SliderFloat("Threshold", &settings.BloomThreshold,0.0f,5.0f,"%.2f");
+			ImGui::SliderFloat("Knee", &settings.BloomKnee,0.0f,2.0f,"%.2f");
+			ImGui::SliderFloat("Strength", &settings.BloomStrength, 0.0f, 2.0f, "%.2f");
+			ImGui::SliderFloat("Radius", &settings.BloomRadius, 0.5f, 3.0f, "%.2f");
+			ImGui::SliderFloat("Scatter", &settings.BloomScatter, 0.0f, 1.0f, "%.2f");
+			ImGui::SliderInt("Levels", &settings.BloomLevels,
+				1, PostProcess::k_MaxLevel);
+			const float previewW = ImGui::GetContentRegionAvail().x;
+			ImGui::Image(
+				reinterpret_cast<ImTextureID>(
+					static_cast<intptr_t>(bloomMap.GetColorAttachmentID())),
+				ImVec2(previewW, previewW * 0.5f),
+				ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
+		}
+
+
 	}
 
 	ImGui::End();
 }
 
 void EditorUI::Draw(Scene& scene,
-                    std::vector<TextureEntry>& textures,
-                    const FrameBuffer& frameBuffer,
-                    const FrameBuffer& shadowMap,
-                    RenderSettings& settings)
+	std::vector<TextureEntry>& textures,
+	const FrameBuffer& frameBuffer,
+	const FrameBuffer& shadowMap, const FrameBuffer& bloomMap, RenderSettings& settings)
 {
 	DrawScenePanel(frameBuffer);
 	DrawCameraPanel(scene.GetCamera(), m_ShowDemoWindow);
-	DrawRendererPanel(scene, textures, shadowMap, settings);
+	DrawRendererPanel(scene, textures, shadowMap, bloomMap, settings);
 
 	if (m_ShowDemoWindow)
 	{

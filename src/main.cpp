@@ -137,6 +137,11 @@ int main()
 		                           static_cast<int32_t>(window.GetHeight()));
 
 		// 清屏色是 GL 状态而不是每帧的命令，设一次就够
+		//
+		// 【这个值必须按"线性"来填】它不再是"屏幕上显示的那个颜色"，
+		// 而是"背景的辐射亮度" —— 它进的是 sceneBuffer（线性空间），
+		// 之后要被曝光、色调映射、gamma 一层层处理过去。
+		// 想让屏幕上呈现 0.09 的灰，反算回线性就是 pow(0.09, 2.2) ≈ 0.005
 		RenderCommand::SetClearColor(glm::vec4(0.005f, 0.005f, 0.008f, 1.0f));
 
 		// 规则 4：ImGuiLayer 必须晚于 Window ——
@@ -172,8 +177,7 @@ int main()
 		postProcessSpec.Height = window.GetHeight();
 		postProcessSpec.DepthOnly = false;
 		FrameBuffer postProcessBuffer(postProcessSpec);
-		PostProcess postProcess;
-
+		PostProcess postProcess(window.GetWidth(), window.GetHeight());
 
 		// ---- 场景：相机、物体、光源都收在这里 ----
 		// 宽高比取自 FBO 而不是窗口：真正决定画面比例的是渲染目标的尺寸
@@ -210,13 +214,13 @@ int main()
 		// 后处理 pass 按旧尺寸渲染（视口取自 postProcessBuffer），
 		// 最终画面的分辨率停在改窗口前那一刻。症状是"糊"而不是"错位"，
 		// 很容易被当成"窗口缩放本来就这样"
-		window.SetResizeCallback([&scene, &sceneBuffer, &postProcessBuffer](uint32_t width, uint32_t height)
+		window.SetResizeCallback([&scene, &sceneBuffer, &postProcessBuffer,&postProcess](uint32_t width, uint32_t height)
 			{
 				// 回调参数已经是 framebuffer 尺寸（像素）。
 				// FBO 尺寸和相机宽高比必须一起更新，少改一个画面就会拉伸
 				sceneBuffer.Resize(width, height);
 				postProcessBuffer.Resize(width, height);
-
+				postProcess.Resize(width, height);
 				// 这里读 FBO 的尺寸而不是回调参数：窗口最小化时 FBO 会拒绝变成 0，
 				// 相机的宽高比也该跟着保持原样
 				scene.GetCamera().SetViewportSize(sceneBuffer.GetWidth(), sceneBuffer.GetHeight());
@@ -479,7 +483,7 @@ int main()
 			const FrameBuffer* display = &sceneBuffer;
 			if (renderSettings.PostProcessEnabled)
 			{
-				postProcess.Render(sceneBuffer, postProcessBuffer,renderSettings);
+				postProcess.Render(sceneBuffer, postProcessBuffer, renderSettings);
 				display = &postProcessBuffer;
 			}
 
@@ -492,7 +496,7 @@ int main()
 			// postProcessBuffer，却【没有任何人看它】—— 表现就是
 			// "后处理开关拖来拖去画面完全不动"，而且不报错、不警告。
 			// 算好了指针却没拿它去用，是这类"管线接对了、最后一步接错"的典型
-			editor.Draw(scene, textures, *display, shadowMap, renderSettings);
+			editor.Draw(scene, textures, *display, shadowMap, postProcess.GetBloomBuffer(), renderSettings);
 
 			// ---- 6. 提交 ----
 			// EndFrame 内部依次做：Render() -> 恢复视口为窗口尺寸 -> 清屏 -> RenderDrawData

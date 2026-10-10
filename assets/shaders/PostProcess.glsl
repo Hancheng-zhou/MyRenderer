@@ -17,6 +17,9 @@ uniform sampler2D u_SceneTexture;
 uniform float u_Exposure; // 1.0 = 不调整；0.5 = 收一档；2.0 = 放一档
 uniform int u_TonemapMode; // 0 = 关（只 clamp），1 = Reinhard，2 = ACES
 uniform int u_DebugHDRView;  // 1 = 只显示亮度 > 1.0 的像素
+uniform sampler2D u_BloomTexture;   // 1 号纹理单元（场景在 0 号）
+uniform float     u_BloomStrength;
+
 
 in vec2 v_UV;
 
@@ -89,7 +92,9 @@ void main()
 	}
 	//曝光
 	vec3 color = sceneColor * u_Exposure;
-	//
+	//叠加
+	color +=texture(u_BloomTexture, v_UV).rgb * u_BloomStrength;
+	//色调映射
 	if(u_TonemapMode == 1)
 	{
 		color = ToneMapReinhard(color);

@@ -338,5 +338,14 @@ void main()
 		lighting += contribution;
 	}
 	vec3 finalColor = ambient + lighting;
-	color = vec4(finalColor, u_Color.a);
+
+	// 【临时改动：alpha 硬编码成 1.0】原先是 u_Color.a。
+	//
+	// ImGui 显示纹理时用的是 alpha 混合（GL_SRC_ALPHA / GL_ONE_MINUS_SRC_ALPHA），
+	// 所以 alpha = 0 的图会画成【完全透明】—— 看到的是面板背景，
+	// 而"透明"和"黑色"在屏幕上【完全一样】。这是整轮排查里最难分辨的一种症状。
+	//
+	// 场景缓冲的 alpha 本来就没人用（显示时只需要 RGB），
+	// 所以钉成 1.0 是合理的；等查清 u_Color 为什么是 0 再定最终写法
+	color = vec4(finalColor, 1.0);
 }

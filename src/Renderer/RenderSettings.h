@@ -71,4 +71,26 @@ struct RenderSettings
 	//色调映射模式
 	int TonemapMode = 1;
 	int DebugHDRView = 0; // 1 = 只显示亮度 > 1.0 的像素
+	// -------bloom-------
+	bool BloomEnabled = true;
+	// 亮度阈值：多亮才算"在发光"。决定光晕覆盖的范围，是这一组里最该先调的
+	float BloomThreshold = 1.0f; 
+	// 软过渡宽度。knee = 0 会退化成硬阈值（光晕边缘出现断层）
+	float BloomKnee = 0.5f;
+	//叠回去的倍率
+	float BloomStrength = 0.6f;
+	// 升采样帐篷滤波的扩散倍数。
+	// 【和"一级 + 拉大抽头间距"那种做法的区别在这一项上】——
+	// 金字塔下"覆盖范围"是靠级数往下走的，不是靠拉间距，
+	// 所以它只要 1.0 左右就够，调大反而会出现同心环
+	float BloomRadius = 1.0f;
+	// 逐级衰减。每往上一级乘一次，所以第 k 级的贡献是 scatter^k。
+	//   1.0  -> 各级等权，得到一团均匀的雾
+	//   0.7  -> 近处紧、远处散（推荐）
+	float BloomScatter = 0.7f;
+	// 【最值得拖的一个】用几级金字塔。
+	//   1 级 -> 紧贴高光的一圈边
+	//   5 级 -> 完整的多尺度光晕
+	// 拖它就能直观看出"级数"在做什么：加一级 = 光晕往外扩一圈
+	int   BloomLevels = 5;
 };

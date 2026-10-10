@@ -134,20 +134,13 @@ void FrameBuffer::Invalidate()
 	// ---- 深度附件----
 	glGenTextures(1, &m_DepthAttachment);
 	glBindTexture(GL_TEXTURE_2D, m_DepthAttachment);
-	if (m_Spec.DepthOnly)
+	if (m_Spec.DepthOnly || m_Spec.NeedDepth)
 	{
 		glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, width, height, 0,
 			GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
 		SetDepthTextureParameters();
 		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
 			GL_TEXTURE_2D, m_DepthAttachment, 0);
-
-		// 【这一步不能少】
-		// 告诉 GL：这个 FBO 没有颜色输出。
-		// 不做的话 glCheckFramebufferStatus 会返回不完整，而且异常信息里
-		// 不会告诉你是这个原因 —— 排查成本极高
-		glDrawBuffer(GL_NONE);
-		glReadBuffer(GL_NONE);
 	}
 	else
 	{
@@ -155,6 +148,31 @@ void FrameBuffer::Invalidate()
 					 0, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, nullptr);
 		SetDepthTextureParameters();
 		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, m_DepthAttachment, 0);
+	}
+
+	// ---- 只有"完全没有颜色附件"的 FBO 才设 GL_NONE ----
+	//
+	// 【这里的判据是 DepthOnly，不能带 NeedDepth】
+	//
+	// glDrawBuffer(GL_NONE) 的语义是"这个 FBO 不往任何颜色附件输出"。
+	// 它只对【整个 FBO 都没有颜色附件】的帧缓冲成立 —— 也就是纯深度图。
+	// 一旦把"需要深度、但也需要颜色"的 FBO（sceneBuffer、postProcessBuffer、
+	// bloom 每一级）也卷进来，后果是：
+	//     glClear(GL_COLOR_BUFFER_BIT)  变成空操作
+	//     片元着色器的输出               被丢弃
+	//   —— 缓冲区从头到尾没被写过，面板全黑
+	//
+	// 【为什么它极其难查】在 GL 3.3 里它【不是错误】：
+	//   GL_FRAMEBUFFER_INCOMPLETE_DRAW_BUFFER 在 GL 3.0 就被删掉了
+	//   （3.0 起 GL_NONE 永远是合法的 draw buffer 值），
+	//   所以 glCheckFramebufferStatus 返回 COMPLETE、glGetError 返回 0，
+	//   连 FBO 完整性检查都拦不住它。
+	//   顺带：glReadBuffer(GL_NONE) 会让 glReadPixels 报 1282 ——
+	//   之前几轮"回读总是失败"的怪事，根因也在这里
+	if (m_Spec.DepthOnly)
+	{
+		glDrawBuffer(GL_NONE);
+		glReadBuffer(GL_NONE);
 	}
 	// FBO 不完整也是一种"运行时才会暴露"的错误：屏幕上看是黑屏，
 	// 排查成本极高，所以在这里就检查并抛出可读信息
