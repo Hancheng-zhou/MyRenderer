@@ -34,6 +34,7 @@ public:
 	void Draw() const;
 private:
 	void SetupBuffers();
+	void ComputeTangents();
 private:
 	std::vector<Vertex> m_Vertices;
 	std::vector<uint32_t> m_Indices;

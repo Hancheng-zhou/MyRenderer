@@ -251,6 +251,16 @@ void SceneRenderer::RenderSceneByPCF(const Scene& scene,
 			// 不重设就会残留上一个物体的值
 			shader.SetInt("u_UseTex", 0);
 		}
+		if (object.Mat.NormalMap)
+		{
+			object.Mat.NormalMap->Bind(2);
+			shader.SetInt("u_UseNormalMap", 1);
+		}
+		else
+		{
+			shader.SetInt("u_UseNormalMap", 0);
+		}
+
 
 		// 模型矩阵来自物体自己的 Transform：位置 / 旋转 / 缩放都在里面
 		shader.SetMat4("u_Model", object.Xform.GetModelMatrix());
@@ -341,7 +351,8 @@ void SceneRenderer::RenderSceneByPCSS(const Scene& scene, const FrameBuffer& tar
 		shader.SetFloat("u_ShadowLightSize", settings.ShadowLightSize);
 
 		shader.SetInt("u_PoissonDiskCount", m_PoissonDiskSampleCount);
-		shader.SetFloat2Array("u_PoissonDisk", m_PoissonDisk.data(), m_PoissonDisk.size());
+		shader.SetFloat2Array("u_PoissonDisk", m_PoissonDisk.data(),
+		                      static_cast<uint32_t>(m_PoissonDisk.size()));
 	}
 
 

@@ -66,17 +66,35 @@ struct RenderSettings
 	// 后处理链路哪里出错，关掉它就能立刻分开
 	// "问题在后面的后处理"还是"问题在前面的场景 pass"
 	bool PostProcessEnabled = true;
-	//曝光
-	float Exposure = 1.0f;
+
+	// 曝光。【这个默认值是标定过的，不是随手填的】
+	//
+	// ACES 是按"18% 灰 = 中间调"设计的，而本场景典型受光面（平台）
+	// 的线性亮度约 1.06 —— 比标准场景亮约 2.5 档。
+	// 所以 0.2 x 1.06 = 0.21，正好落回 0.18 附近。
+	//
+	// 【1.0 的含义只是"不做任何调整"】它永远中性 —— 画面偏白说明
+	// 场景本身太亮，不是曝光设错了。它是"相机的进光量"，不是亮度滑块
+	float Exposure = 0.2f;
+
 	//色调映射模式
 	int TonemapMode = 1;
 	int DebugHDRView = 0; // 1 = 只显示亮度 > 1.0 的像素
 	// -------bloom-------
 	bool BloomEnabled = true;
-	// 亮度阈值：多亮才算"在发光"。决定光晕覆盖的范围，是这一组里最该先调的
-	float BloomThreshold = 1.0f; 
+
+	// 亮度阈值：多亮才算"在发光"。
+	//
+	// 【重要：它作用在"曝光之后"的亮度上】—— BloomDownsample.glsl 里
+	// 先乘 u_Exposure 再和它比。所以改 Exposure 会连带改变"谁在发光"：
+	//     曝光 0.2 + 阈值 0.25 -> 平台(0.21)不发光，球的高光(0.44)发光  ✓
+	//     曝光 0.2 + 阈值 1.00 -> 什么都不发光（阈值高于场上所有值）
+	// 后者是"Bloom 莫名其妙消失了"最常见的原因，不是 bug。
+	// 经验法则：阈值 ≈ 最亮的"不该发光"表面的曝光后亮度 x 1.2
+	float BloomThreshold = 0.25f;
+
 	// 软过渡宽度。knee = 0 会退化成硬阈值（光晕边缘出现断层）
-	float BloomKnee = 0.5f;
+	float BloomKnee = 0.25f;
 	//叠回去的倍率
 	float BloomStrength = 0.6f;
 	// 升采样帐篷滤波的扩散倍数。
@@ -93,4 +111,46 @@ struct RenderSettings
 	//   5 级 -> 完整的多尺度光晕
 	// 拖它就能直观看出"级数"在做什么：加一级 = 光晕往外扩一圈
 	int   BloomLevels = 5;
+
+	//----FXAA -----
+	bool FxaaEnabled = true;
+	// 相对阈值：亮度差超过 "最大亮度 × 这个值" 才算边。
+	//   调大 -> 只有很硬的边才处理（保守，几乎看不出变化）
+	//   调小 -> 更多渐变被当成边（画面整体变糊）
+	// 0.063 是官方给的"中等质量"推荐值
+	float FxaaEdgeThreshold = 0.063f;
+	// 绝对阈值：整块亮度差低于它就完全跳过。
+	// 它管的是暗处 —— 暗处的相对阈值会自动变得极小，
+	// 没有这一项的话影子里会先糊起来
+	float FxaaEdgeThresholdMin = 0.0312f;
+	// 只显示"边界掩码"，用来确认 FXAA 到底在哪些地方动手
+	int DebugEdges = 0;
+
+	// =======================================================================
+	//  调试图层
+	//
+	//  把 Scene 面板切换到任意一张中间纹理上。
+	//
+	//  【为什么值得单独做一件事】管线有五六张中间图，而"画面对"和
+	//  "管线接对"是两个不同的问题。没有这个开关时你只能看到最后那张 ——
+	//  一旦它不对，你分不清是场景 pass 错了、还是后处理哪一环错了。
+	//
+	//  实战价值：定位"FBO 完整、绑定正确、无 GL 错误，但面板全黑"那种
+	//  静默 bug 时，把 sceneBuffer 直接贴出来一步就能把范围砍一半 ——
+	//  那个 bug 之前耗掉了很多轮，正是因为看不到中间状态
+	// =======================================================================
+	enum DebugViewKind
+	{
+		DebugOff = 0,
+		DebugSceneColor,     // sceneBuffer 的颜色（线性 HDR，未曝光未色调映射）
+		DebugSceneDepth,     // sceneBuffer 的深度附件
+		DebugShadowDepth,    // shadowMap（2048x2048）
+		DebugBloomL0,        // 辉光金字塔第 0 级（阈值提取 + 上采样累积之后）
+		DebugPostOutput,     // postProcessBuffer（已曝光 + 色调映射 + gamma）
+		DebugViewCount,
+	};
+
+	// 【main 里的 switch 用这些常量，不要用裸数字】
+	// 名字表在 EditorUI.cpp 里，靠一个 static_assert 钉住数量一致
+	int DebugView = DebugOff;
 };

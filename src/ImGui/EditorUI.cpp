@@ -82,10 +82,36 @@ void EditorUI::DrawCameraPanel(Camera& camera, bool& showDemoWindow)
 	ImGui::End();
 }
 
+// ===========================================================================
+//  调试图层的名字表。
+//
+//  【顺序必须和 RenderSettings::DebugViewKind 一致】——
+//  main 里那个 switch 用枚举常量，这里用同一套顺序。
+//
+//  下面的 static_assert 把"数量"钉住：加了一个视图却忘了加名字，
+//  编译就会失败。没有它的话只会在下拉框里少一项，没人会注意到 ——
+//  而"名字和内容对不上"是最难自查的一类错（你以为在看 A，其实在看 B）
+// ===========================================================================
+namespace
+{
+	const char* const kViewNames[] =
+	{
+		"Off (final image)",
+		"Scene color (linear HDR)",
+		"Scene depth",
+		"Shadow depth",
+		"Bloom L0",
+		"Post output (LDR)",
+	};
+
+	static_assert(sizeof(kViewNames) / sizeof(kViewNames[0]) == RenderSettings::DebugViewCount,
+	              "kViewNames 必须和 RenderSettings::DebugViewKind 一一对应");
+}
+
 // 场景视图：把 FBO 的颜色附件贴进 ImGui 窗口。
 // 渲染分辨率和显示尺寸就此解耦——画面会被缩放显示，
 // 但渲染始终发生在 FBO 的像素上，这正是后处理需要的形态。
-void EditorUI::DrawScenePanel(const FrameBuffer& frameBuffer)
+void EditorUI::DrawScenePanel(const FrameBuffer& frameBuffer, uint32_t textureId, int debugView)
 {
 	// 每帧先清零：窗口被折叠或数据异常时不该保留上一帧的悬停状态
 	m_SceneHovered = false;
@@ -103,7 +129,21 @@ void EditorUI::DrawScenePanel(const FrameBuffer& frameBuffer)
 	// 信息行和开关必须放在图像【之前】：
 	// 图像要吃掉剩下的全部高度，放在它后面会把内容顶出窗口，
 	// 逼出滚动条——而滚动条又会压缩图像宽度，形成没必要的留白
-	ImGui::Text("Render target : %u x %u", frameBuffer.GetWidth(), frameBuffer.GetHeight());
+	if (debugView == RenderSettings::DebugOff)
+	{
+		ImGui::Text("Render target : %u x %u", frameBuffer.GetWidth(), frameBuffer.GetHeight());
+	}
+	else
+	{
+		// 【调试图层生效时必须一眼看得出来】用警示色标出来。
+		// 不标的话，你会在"以为在看最终画面"的状态下对着一张中间纹理
+		// 调半天参数 —— 这正是"以为在看 A、其实在看 B"那个老坑，
+		// 而且这次的代价可能是几十分钟
+		ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.15f, 1.0f),
+		                   "DEBUG VIEW : %s   (%u x %u)",
+		                   kViewNames[debugView],
+		                   frameBuffer.GetWidth(), frameBuffer.GetHeight());
+	}
 	ImGui::Checkbox("Keep aspect ratio", &m_KeepAspectRatio);
 
 	const ImVec2 avail = ImGui::GetContentRegionAvail();
@@ -135,12 +175,15 @@ void EditorUI::DrawScenePanel(const FrameBuffer& frameBuffer)
 
 		// 纹理 ID 转 ImTextureID（1.89 里它就是 void*）。
 		// 必须过一趟 intptr_t：uint32 直接转指针在 64 位下语义不明确
-		const ImTextureID textureId =
-			reinterpret_cast<ImTextureID>(static_cast<intptr_t>(frameBuffer.GetColorAttachmentID()));
+		//
+		// 【这个 ID 来自参数，不再从 frameBuffer 里取】——
+		// 调试图层要显示的可能是深度附件或别的缓冲
+		const ImTextureID imTextureId =
+			reinterpret_cast<ImTextureID>(static_cast<intptr_t>(textureId));
 
 		// UV 的 V 轴要翻转：GL 纹理原点在左下，ImGui 的在左上，
 		// 不翻的话画面是上下颠倒的
-		ImGui::Image(textureId, size, ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
+		ImGui::Image(imTextureId, size, ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
 
 		// 只在图像本身之上才算悬停：窗口的标题栏、空白区都不算，
 		// 那些地方的操作该留给 ImGui
@@ -151,32 +194,34 @@ void EditorUI::DrawScenePanel(const FrameBuffer& frameBuffer)
 }
 
 void EditorUI::DrawTexturePicker(std::vector<TextureEntry>& entries,
-                                 Material& material,
+								std::shared_ptr<Texture>& current,
+								const char* label,
                                  int objectIndex)
 {
 	ImGui::PushID(objectIndex);
-
+	ImGui::PushID(label);
 	// 当前选中项：拿【指针】去比，不要比名字或路径。
 	// 同一张纹理可以被多个材质共享，只有指针比较才能正确判断
 	// "是不是同一张"
-	const char* current = "(none)";
+	const char* displayName = "(none)";
 	for (const TextureEntry& entry : entries)
 	{
-		if (entry.Handle == material.AlbedoTexture)
+		if (entry.Handle == current)
 		{
-			current = entry.Name.c_str();
+			displayName = entry.Name.c_str();
 			break;
 		}
 	}
 
+	ImGui::TextUnformatted(label);
 	ImGui::SetNextItemWidth(-1.0f);   // 撑满面板宽度
-	if (ImGui::BeginCombo("##texture", current))
+	if (ImGui::BeginCombo("##texture", displayName))
 	{
 		// "(none)" 是材质的【正常状态】，不是"还没选"，
-		// 所以要能明确地选回去（配合 shader 里的 u_UseTex 分支）
-		if (ImGui::Selectable("(none)", material.AlbedoTexture == nullptr))
+		// 所以要能明确地选回去（配合 shader 里的 u_UseTex / u_UseNormalMap 分支）
+		if (ImGui::Selectable("(none)", current == nullptr))
 		{
-			material.AlbedoTexture = nullptr;
+			current = nullptr;
 		}
 
 		for (const TextureEntry& entry : entries)
@@ -189,8 +234,7 @@ void EditorUI::DrawTexturePicker(std::vector<TextureEntry>& entries,
 			// 缩略图。UV 必须【翻转 V】，原因和 Scene 面板显示 FBO 时
 			// 完全一样：这张纹理在解码时被 stb 翻转过一次
 			//（为了让 OpenGL 的 uv(0,0) 落在图片左下角），
-			// 而 ImGui 控件的左上角就是 uv(0,0)，不翻回来图片是倒的。
-			// 所以两处用的是同一组参数，这不是巧合
+			// 而 ImGui 控件的左上角就是 uv(0,0)，不翻回来图片是倒的
 			ImGui::Image(
 				reinterpret_cast<ImTextureID>(
 					static_cast<intptr_t>(entry.Handle->GetRendererID())),
@@ -200,17 +244,18 @@ void EditorUI::DrawTexturePicker(std::vector<TextureEntry>& entries,
 
 			ImGui::SameLine();
 
-			const bool selected = (entry.Handle == material.AlbedoTexture);
+			const bool selected = (entry.Handle == current);
 			if (ImGui::Selectable(entry.Name.c_str(), selected))
 			{
-				material.AlbedoTexture = entry.Handle;
+				current = entry.Handle;
 			}
 		}
 
 		ImGui::EndCombo();
 	}
 
-	ImGui::PopID();
+	ImGui::PopID();   // label
+	ImGui::PopID();   // objectIndex
 }
 
 // 一个 uint32_t 的滑块。
@@ -482,11 +527,14 @@ void EditorUI::DrawRendererPanel(Scene& scene,
 			ImGui::DragFloat3("Specular", glm::value_ptr(material.Specular), 0.01f);
 			ImGui::SliderFloat("Shininess", &material.Shininess, 1.0f, 256.0f, "%.0f");
 
-			DrawTexturePicker(textures, material, m_SelectedObject);
+			DrawTexturePicker(textures, material.AlbedoTexture, "Albedo", m_SelectedObject);
+			DrawTexturePicker(textures, material.NormalMap, "Normal", m_SelectedObject);
 
 			// 把贴图状态摆出来：一眼看清哪张贴图挂在了哪个物体上
-			ImGui::Text("Albedo : %s",
-			            material.AlbedoTexture ? material.AlbedoTexture->GetPath().c_str() : "(none)");
+			ImGui::TextDisabled("Albedo path : %s",
+				material.AlbedoTexture ? material.AlbedoTexture->GetPath().c_str() : "(none)");
+			ImGui::TextDisabled("Normal path : %s",
+				material.NormalMap ? material.NormalMap->GetPath().c_str() : "(none)");
 		}
 	}
 
@@ -691,8 +739,48 @@ void EditorUI::DrawRendererPanel(Scene& scene,
 				ImVec2(previewW, previewW * 0.5f),
 				ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
 		}
+		ImGui::Separator();
+		ImGui::Checkbox("FXAA", &settings.FxaaEnabled);
+		if (settings.FxaaEnabled)
+		{
+			// 两个阈值是"逻辑或"关系，所以要一起看：
+			//   相对阈值管亮处，绝对阈值管暗处
+			ImGui::SliderFloat("Edge threshold", &settings.FxaaEdgeThreshold,
+				0.0f, 0.25f, "%.3f", ImGuiSliderFlags_Logarithmic);
+			ImGui::SliderFloat("Edge threshold min", &settings.FxaaEdgeThresholdMin,
+				0.0f, 0.1f, "%.4f", ImGuiSliderFlags_Logarithmic);
 
-
+			// 把"边界掩码"贴出来。这是这一节的 depth preview ——
+			// 没有它，"FXAA 没效果"和"FXAA 没找到边"这两种病分不开
+			bool debugEdges = (settings.DebugEdges != 0);
+			if (ImGui::Checkbox("Debug: edge mask", &debugEdges))
+			{
+				settings.DebugEdges = debugEdges ? 1 : 0;
+			}
+		}
+		// ---- 调试图层 ----
+		//
+		// 【为什么用 BeginCombo + 循环，而不是 ImGui::Combo("Off\0A\0B\0")】
+		// 后者那个字符串必须手写，和 kViewNames 变成两份数据 ——
+		// 加一个视图就要改两处，改漏了不报错（下拉框里少一项或名字错位）
+		ImGui::Separator();
+		if (ImGui::BeginCombo("Debug view", kViewNames[settings.DebugView]))
+		{
+			for (int i = 0; i < RenderSettings::DebugViewCount; ++i)
+			{
+				const bool selected = (settings.DebugView == i);
+				if (ImGui::Selectable(kViewNames[i], selected))
+				{
+					settings.DebugView = i;
+				}
+				if (selected)
+				{
+					ImGui::SetItemDefaultFocus();
+				}
+			}
+			ImGui::EndCombo();
+		}
+		ImGui::TextDisabled("switch to any Framebuffer");
 	}
 
 	ImGui::End();
@@ -701,9 +789,10 @@ void EditorUI::DrawRendererPanel(Scene& scene,
 void EditorUI::Draw(Scene& scene,
 	std::vector<TextureEntry>& textures,
 	const FrameBuffer& frameBuffer,
+	uint32_t sceneTextureId,
 	const FrameBuffer& shadowMap, const FrameBuffer& bloomMap, RenderSettings& settings)
 {
-	DrawScenePanel(frameBuffer);
+	DrawScenePanel(frameBuffer, sceneTextureId, settings.DebugView);
 	DrawCameraPanel(scene.GetCamera(), m_ShowDemoWindow);
 	DrawRendererPanel(scene, textures, shadowMap, bloomMap, settings);
 

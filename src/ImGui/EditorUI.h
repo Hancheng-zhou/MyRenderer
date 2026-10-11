@@ -32,9 +32,16 @@ struct Material;   // 注意是 struct 不是 class：写错会触发 C4099（�
 class EditorUI
 {
 public:
+	// 【sceneTextureId 由调用方决定，而不是从 frameBuffer 里取】
+	//
+	// 正常情况它就是 frameBuffer 的颜色附件；调试图层打开时，它可以是
+	// 深度附件、bloom 某一级、或者别的缓冲 —— 面板只负责"把这张纹理
+	// 贴出来"，"这张纹理是哪来的"完全由 main 决定。
+	// 于是每加一个调试图层，EditorUI 一行都不用改
 	void Draw(Scene& scene,
 	          std::vector<TextureEntry>& textures,
 	          const FrameBuffer& frameBuffer,
+	          uint32_t sceneTextureId,
 	          const FrameBuffer& shadowMap, const FrameBuffer& bloomMap, RenderSettings& settings);
 
 	// 鼠标是否悬停在场景视口上。
@@ -51,9 +58,10 @@ public:
 
 private:
 	void DrawCameraPanel(Camera& camera, bool& showDemoWindow);
-	void DrawScenePanel(const FrameBuffer& frameBuffer);
+	void DrawScenePanel(const FrameBuffer& frameBuffer, uint32_t textureId, int debugView);
 	void DrawTexturePicker(std::vector<TextureEntry>& entries,
-	                       Material& material,
+	                       std::shared_ptr<Texture>& current, 
+						   const char* label,
 	                       int objectIndex);
 	void DrawRendererPanel(Scene& scene,
 	                       std::vector<TextureEntry>& textures,

@@ -13,6 +13,7 @@
 Mesh::Mesh(std::vector<Vertex> vertices, std::vector<uint32_t> indices)
 	:m_Vertices(std::move(vertices)),m_Indices(std::move(indices))
 {
+	ComputeTangents();
 	SetupBuffers();
 }
 
@@ -128,7 +129,7 @@ Mesh Mesh::CreateSphere(float radius, uint32_t segments, uint32_t rings)
 	vertices.reserve(static_cast<std::size_t>(segments + 1) * (rings + 1));
 	indices.reserve(static_cast<std::size_t>(segments) * rings * 6);
 
-	const float pi = glm::pi<float>();
+	constexpr float pi = glm::pi<float>();
 
 	// ---- 顶点：纬线 × 经线 ----
 	//
@@ -209,7 +210,8 @@ void Mesh::SetupBuffers()
 		{
 			{ShaderDataType::Float3,"a_Position"},
 			{ShaderDataType::Float3,"a_Normal"},
-			{ShaderDataType::Float2,"a_TexCoord"}
+			{ShaderDataType::Float2,"a_TexCoord"},
+			{ShaderDataType::Float4,"a_Tangent"}
 		}
 	);
 
@@ -219,6 +221,84 @@ void Mesh::SetupBuffers()
 	UploadVertexData();
 	m_VertexArray->AddVertexBuffer(m_VertexBuffer);
 	m_VertexArray->AddIndexBuffer(m_IndexBuffer);
+}
+void Mesh::ComputeTangents()
+{
+	const std::size_t vertexCount = m_Vertices.size();
+	if (vertexCount == 0 || m_Indices.size() < 3)
+	{
+		return;
+	}
+
+	std::vector<glm::vec3> tanSum(vertexCount, glm::vec3(0.0f));
+	std::vector<glm::vec3> bitanSum(vertexCount, glm::vec3(0.0f));
+
+	for (std::size_t i = 0; i + 2 < m_Indices.size(); ++i)
+	{
+		const uint32_t i0 = m_Indices[i + 0];
+		const uint32_t i1 = m_Indices[i + 1];
+        const uint32_t i2 = m_Indices[i + 2];
+
+		const Vertex& v0 = m_Vertices[i0];
+		const Vertex& v1 = m_Vertices[i1];
+        const Vertex& v2 = m_Vertices[i2];
+
+		const glm::vec3 e1 = v1.pos - v0.pos;
+		const glm::vec3 e2 = v2.pos - v0.pos;
+		const glm::vec2 d1 = v1.texcoord - v0.texcoord;
+		const glm::vec2 d2 = v2.texcoord - v0.texcoord;
+		const float det = d1.x * d2.y - d2.x * d1.y;
+		//防止 uv退化
+		if (std::abs(det) < 1e-12f)
+		{
+			continue;
+		}
+		const float r = 1.0f / det;
+		const glm::vec3 t = (e1 * d2.y - e2 * d1.y) * r;
+		const glm::vec3 b = (e2 * d1.x - e1 * d2.x) * r;
+
+		tanSum[i0] += t; bitanSum[i0] += b;
+		tanSum[i1] += t; bitanSum[i1] += b;
+		tanSum[i2] += t; bitanSum[i2] += b;
+	}
+	// ---- 逐个顶点：正交化 + 归一化 + 定手性 ----
+	//
+	// 【这一段必须覆盖到每一个顶点】—— 包括那些一个有效三角形都没沾到的。
+	// 只有"每个顶点最终都被写了一个有效值"，才能保证不会漏 nan 出去
+	for (std::size_t i = 0; i < vertexCount; ++i)
+	{
+		Vertex& v = m_Vertices[i];
+		const glm::vec3 n = v.normal;
+		// 格拉姆-施密特：减掉 T 在 N 方向的分量。
+		// 累加出来的 T 未必垂直于 N（球两极附近的 T 来自好几个方向的三角形），
+		// 不修正的话 TBN 不是正交基，法线会整体歪
+		glm::vec3 t = tanSum[i] - n * glm::dot(n, tanSum[i]);
+
+		if (glm::dot(t, t) < 1e-12f)
+		{
+			// 退化：所有 UV 挤在一点（比如球的极点）。
+			// 随便挑一个垂直于 N 的向量顶上 —— 【绝不能留 (0,0,0)】，
+			// 那会让 mat3(T,B,N) 奇异，变换结果是 nan
+			const glm::vec3 helper = (std::abs(n.y) < 0.99f) ? glm::vec3(0.0f, 1.0f, 0.0f)
+				: glm::vec3(1.0f, 0.0f, 0.0f);
+			t = glm::normalize(glm::cross(helper, n));
+		}
+		else
+		{
+			t = glm::normalize(t);
+		}
+		// 手性：sign(dot(cross(N, T), B))
+		//
+		// UV 被镜像过的模型上，cross(N,T) 和真实的副切线方向相反。
+		// 不修正的话法线的 x 分量整体翻转 ——
+		// 表现是"凹凸看起来是凹的"，而且【只有镜像 UV 的那部分错】，
+		// 所以特别难判断
+		const float sign = (glm::dot(glm::cross(n, t), bitanSum[i]) < 0.0f) ? -1.0f : 1.0f;
+
+		v.tangent = glm::vec4(t, sign);
+	}
+
+
 }
 void Mesh::UploadVertexData()
 {

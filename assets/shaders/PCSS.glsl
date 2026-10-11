@@ -16,6 +16,7 @@
 layout(location = 0) in vec3 a_Position;
 layout(location = 1) in vec3 a_Normal;
 layout(location = 2) in vec2 a_TexCoord;
+layout(location = 3) in vec4 a_Tangent;
 
 uniform mat4 u_ViewProjection;
 uniform mat4 u_Model;
@@ -24,6 +25,7 @@ uniform mat3 u_NormalMatrix;
 out vec3 v_WorldPos;
 out vec3 v_Normal;
 out vec2 v_TexCoord;
+out vec4 v_Tangent;
 
 void main()
 {
@@ -39,13 +41,14 @@ void main()
 	v_Normal = u_NormalMatrix * a_Normal;
 
 	v_TexCoord = a_TexCoord;
+	v_Tangent = vec4(mat3(u_Model)*a_Tangent.xyz,a_Tangent.w);
 	gl_Position = u_ViewProjection * worldPos;
 }
 
 #type fragment
 #version 330 core
 
-layout(location = 0) out vec4 color;
+layout(location = 0) out vec4 FragColor;
 
 // ===========================================================================
 //  常量
@@ -76,6 +79,8 @@ uniform float u_Far;                     // 光照相机的 far
 uniform vec4  u_Color;
 uniform sampler2D u_Texture;
 uniform int u_UseTex;
+uniform sampler2D u_NormalMap;
+uniform int       u_UseNormalMap;   // 0 = 不用法线贴图（和 u_UseTex 同理）
 
 // ---- 阴影 ----
 uniform int       u_ShadowsEnabled;      // 0 = 完全跳过阴影计算
@@ -112,6 +117,7 @@ uniform vec2 u_LightCutoff[MAX_LIGHTS]; //(innerCos,outerCos)
 in vec3 v_WorldPos;
 in vec3 v_Normal;
 in vec2 v_TexCoord;
+in vec4 v_Tangent; 
 
 // ===========================================================================
 //  工具函数
@@ -276,6 +282,32 @@ void main()
 	// 插值之后长度不再是 1，三个方向向量都必须重新归一化
 	vec3 N = normalize(v_Normal);
 	vec3 V = normalize(u_CameraPos - v_WorldPos);
+	
+
+	// ---- 法线贴图：把切线空间的法线转到世界空间 ----
+	if (u_UseNormalMap != 0)
+	{
+		// T 先做格拉姆-施密特：非均匀缩放下 T 和 N 不再垂直，
+		// 不减去 N 方向的分量，TBN 就不是正交基，法线整体会歪
+		vec3 T = normalize(v_Tangent.xyz - N * dot(N, v_Tangent.xyz));
+
+		// 副切线【现算】而不是从顶点传过来，再乘上顶点带下来的手性符号。
+		// 现算的好处是它天然垂直于 N 和 T，省掉一次正交化
+		vec3 B = cross(N, T) * v_Tangent.w;
+
+		// 【GLSL 的 mat3(a,b,c) 是列主序】—— 三列分别是 a/b/c，
+		// 所以 TBN * (x,y,z) = x*T + y*B + z*N，正是切线空间 → 世界空间的定义
+		mat3 TBN = mat3(T, B, N);
+
+		// 采样值是 [0,1] 的无符号数，要映射回 [-1,1]；
+		// (0,0,1) 对应"没有凹凸"
+		vec3 tangentNormal = texture(u_NormalMap, v_TexCoord).rgb * 2.0 - 1.0;
+
+		// 最后归一化：TBN 非正交或插值误差都会让长度偏离 1
+		N = normalize(TBN * tangentNormal);
+		
+	}
+
 
 	vec3 baseColor = u_Diffuse;
 	if(u_UseTex > 0)
@@ -347,5 +379,7 @@ void main()
 	//
 	// 场景缓冲的 alpha 本来就没人用（显示时只需要 RGB），
 	// 所以钉成 1.0 是合理的；等查清 u_Color 为什么是 0 再定最终写法
-	color = vec4(finalColor, 1.0);
+	
+	FragColor = vec4(finalColor, 1.0);
+	//FragColor = vec4(normalize(v_Tangent.xyz - N * dot(N, v_Tangent.xyz)) * 0.5 + 0.5, 1.0);
 }

@@ -7,4 +7,5 @@ public:
     glm::vec3 pos;
     glm::vec3 normal;
     glm::vec2 texcoord;
+    glm::vec4 tangent;
 };

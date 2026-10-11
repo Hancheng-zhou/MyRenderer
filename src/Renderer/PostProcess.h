@@ -11,6 +11,7 @@ public:
 	void Resize(uint32_t width, uint32_t height);
 	void Render(const FrameBuffer& scene, const FrameBuffer& target,const RenderSettings& settings);
 	const FrameBuffer& GetBloomBuffer() const { return *m_Levels[0]; }
+	const FrameBuffer& GetOutput() const { return m_Output; }
 	static constexpr int k_MaxLevel = 6;
 private:
 	void Blit(Shader& shader,
@@ -22,6 +23,8 @@ private:
 	Shader m_DownsampleShader;
 	Shader m_UpsampleShader;
 	Shader m_CompositeShader;
+	Shader m_FxaaShader;
+	FrameBuffer m_Output;
 	VertexArray m_FullScreenVAO;
 	std::vector<std::unique_ptr<FrameBuffer>> m_Levels;
 };

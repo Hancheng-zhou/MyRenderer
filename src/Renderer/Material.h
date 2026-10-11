@@ -8,4 +8,5 @@ struct Material {
     glm::vec3 Specular{ 0.5f, 0.5f, 0.5f };   // ks
     float Shininess = 32.0f;                // 高光指数
     std::shared_ptr<Texture> AlbedoTexture;
+    std::shared_ptr<Texture> NormalMap;
 };

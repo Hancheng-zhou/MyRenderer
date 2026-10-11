@@ -484,7 +484,48 @@ int main()
 			if (renderSettings.PostProcessEnabled)
 			{
 				postProcess.Render(sceneBuffer, postProcessBuffer, renderSettings);
-				display = &postProcessBuffer;
+				display = &postProcess.GetOutput();;
+			}
+
+			// ---- 4.5 调试图层：把 Scene 面板切到任意一张中间纹理 ----
+			//
+			// 【为什么这个 switch 放在 main，而不是 EditorUI 里】
+			// 因为只有这里同时持有全部 FBO。EditorUI 需要的只是
+			// "一张纹理 + 它多大"，不需要知道这张图是哪来的 ——
+			// 这正是当初"FBO 管自己、不管视口"那条边界划对了的回报：
+			// 加一个调试图层，EditorUI 的逻辑一行都不用动
+			//
+			// 【为什么值得有它】管线有五六张中间图，"画面对"和"管线接对"
+			// 是两个问题。看不到中间状态时，一个静默 bug 能查很多轮
+			const FrameBuffer& bloomL0 = postProcess.GetBloomBuffer();
+
+			const FrameBuffer* shownBuffer  = display;
+			uint32_t           shownTexture = display->GetColorAttachmentID();
+
+			switch (renderSettings.DebugView)
+			{
+			case RenderSettings::DebugSceneColor:
+				shownBuffer  = &sceneBuffer;
+				shownTexture = sceneBuffer.GetColorAttachmentID();
+				break;
+			case RenderSettings::DebugSceneDepth:
+				shownBuffer  = &sceneBuffer;
+				shownTexture = sceneBuffer.GetDepthAttachmentID();
+				break;
+			case RenderSettings::DebugShadowDepth:
+				shownBuffer  = &shadowMap;
+				shownTexture = shadowMap.GetDepthAttachmentID();
+				break;
+			case RenderSettings::DebugBloomL0:
+				shownBuffer  = &bloomL0;
+				shownTexture = bloomL0.GetColorAttachmentID();
+				break;
+			case RenderSettings::DebugPostOutput:
+				shownBuffer  = &postProcessBuffer;
+				shownTexture = postProcessBuffer.GetColorAttachmentID();
+				break;
+			default:   // DebugOff：显示的就是上面那个最终画面
+				break;
 			}
 
 			// ---- 5. 构建 UI ----
@@ -496,7 +537,7 @@ int main()
 			// postProcessBuffer，却【没有任何人看它】—— 表现就是
 			// "后处理开关拖来拖去画面完全不动"，而且不报错、不警告。
 			// 算好了指针却没拿它去用，是这类"管线接对了、最后一步接错"的典型
-			editor.Draw(scene, textures, *display, shadowMap, postProcess.GetBloomBuffer(), renderSettings);
+			editor.Draw(scene, textures, *shownBuffer, shownTexture, shadowMap, bloomL0, renderSettings);
 
 			// ---- 6. 提交 ----
 			// EndFrame 内部依次做：Render() -> 恢复视口为窗口尺寸 -> 清屏 -> RenderDrawData

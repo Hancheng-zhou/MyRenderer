@@ -34,6 +34,16 @@ namespace
 
 		return spec;
 	}
+	FrameBufferSpec MakeOutputSpec(uint32_t width, uint32_t height)
+	{
+		FrameBufferSpec spec;
+		spec.Width = width;
+		spec.Height = height;
+		spec.DepthOnly = false;
+		spec.ColorFormat = TextureFormat::RGBA8;
+		return spec;
+
+	}
 
 }
 
@@ -43,6 +53,8 @@ PostProcess::PostProcess(uint32_t width, uint32_t height)
 	: m_DownsampleShader("assets/shaders/BloomDownsample.glsl")
 	, m_UpsampleShader("assets/shaders/BloomUpsample.glsl")
 	, m_CompositeShader("assets/shaders/PostProcess.glsl")
+	,m_FxaaShader("assets/shaders/FXAA.glsl")
+	, m_Output(MakeOutputSpec(width,height))
 {
 	// 【文件名大小写必须和磁盘上完全一致】Windows 不区分大小写，
 	// 写错也能加载成功 —— 于是这个错在 Windows 上永远不会暴露
@@ -56,6 +68,7 @@ PostProcess::PostProcess(uint32_t width, uint32_t height)
 	m_UpsampleShader.SetInt("u_Source", 0);
 	m_CompositeShader.SetInt("u_SceneTexture", 0);
 	m_CompositeShader.SetInt("u_BloomTexture", 1);
+	m_FxaaShader.SetInt("u_SceneTexture", 0);
 
 	// 一次把上限级数全建出来。
 	// 面板上的"级数"只控制用几级，不重新分配
@@ -65,6 +78,7 @@ PostProcess::PostProcess(uint32_t width, uint32_t height)
 		m_Levels.push_back(std::make_unique<FrameBuffer>(
 			MakeLevelSpec(width, height, level)));
 	}
+	m_Output.Resize(width, height);
 }
 
 void PostProcess::Resize(uint32_t width, uint32_t height)
@@ -141,12 +155,7 @@ void PostProcess::Render(const FrameBuffer& scene, const FrameBuffer& target, co
 		RenderCommand::SetAdditiveBlend(false);
 
 	}
-	// 【必须是 SetFloat，不能是 SetInt】
-	// 这一行如果写成 SetInt：
-	//   ① C++ 侧先把 0.2 隐式转成 int -> 0
-	//   ② 然后 glUniform1i 往一个 float uniform 里塞整数（类型不匹配，UB）
-	// 结果就是曝光恒等于 0，整个画面全黑 —— 而且不报错。
-	// 注意上面降采样那一级用的是 SetFloat，两处必须一致
+	
 	m_CompositeShader.SetFloat("u_Exposure", settings.Exposure);
 	m_CompositeShader.SetFloat("u_BloomStrength", bloomOn? settings.BloomStrength:0.0f);
 	m_CompositeShader.SetInt("u_TonemapMode", settings.TonemapMode);
@@ -156,7 +165,13 @@ void PostProcess::Render(const FrameBuffer& scene, const FrameBuffer& target, co
 	Blit(m_CompositeShader, target,
 		scene.GetColorAttachmentID(),
 		m_Levels[0]->GetColorAttachmentID());
-
+	m_FxaaShader.SetFloat2("u_TexelSize", glm::vec2(1.0f / static_cast<float>(m_Output.GetWidth()),
+		1.0f / static_cast<float>(m_Output.GetHeight())));
+	m_FxaaShader.SetFloat("u_EdgeThreshold", settings.FxaaEdgeThreshold);
+	m_FxaaShader.SetFloat("u_EdgeThresholdMin", settings.FxaaEdgeThresholdMin);
+	m_FxaaShader.SetInt("u_FxaaEnabled", settings.FxaaEnabled ? 1 : 0);
+	m_FxaaShader.SetInt("u_DebugEdges", settings.DebugEdges);
+	Blit(m_FxaaShader, m_Output, target.GetColorAttachmentID());
 	// ---- 统一恢复 ----
 	// 这些开关都是【全局】的。不恢复的话症状离原因很远
 	RenderCommand::SetDepthTest(true);
