@@ -277,6 +277,9 @@ int main()
 		// 这里只设全程不变的。u_Texture 是"采样器读哪个纹理单元"，固定为 0
 		basicShader.SetFloat4("u_Color", glm::vec4(1.0f));
 		basicShader.SetInt("u_Texture", 0);
+		basicShader.SetInt("u_ShadowMap", 1);
+		basicShader.SetInt("u_NormalMap", 2);
+		basicShader.SetInt("u_GlowMap", 3);
 		// ---- 扫描纹理目录 ----
 		TextureSpec colorSpec;
 		colorSpec.SRGB      = true;                      // 颜色贴图必须做 sRGB 解码
@@ -286,6 +289,41 @@ int main()
 		// 只在启动时扫一次：目录 IO + 图片解码 + 显存上传放进每帧循环会直接卡死
 		std::vector<TextureEntry> textures =
 			LoadTexturesFromDirectory("assets/textures/", colorSpec);
+		std::vector<TextureEntry> objTextures =
+			LoadTexturesFromDirectory("assets/obj/", colorSpec);
+		textures.insert(textures.end(), objTextures.begin(), objTextures.end());
+		{
+			TextureSpec linearSpec;
+			linearSpec.SRGB = false;
+
+			std::string error;
+			std::shared_ptr<Texture> nm =
+				TryLoadTexture("assets/obj/diablo3_pose_nm_tangent.tga", linearSpec, &error);
+
+			if (nm)
+			{
+				// 覆盖掉同名的那个（它是被 colorSpec 错误解码过的）
+				bool replaced = false;
+				for (TextureEntry& entry : textures)
+				{
+					if (entry.Name == "diablo3_pose_nm_tangent")
+					{
+						entry.Handle = nm;
+						replaced = true;
+						break;
+					}
+				}
+				if (!replaced)
+				{
+					textures.push_back({ "diablo3_pose_nm_tangent",
+										 "assets/obj/diablo3_pose_nm_tangent.tga", nm });
+				}
+			}
+			else
+			{
+				std::fprintf(stderr, "[main] normal map load failed: %s\n", error.c_str());
+			}
+		}
 
 		// 按名字查，不要写 textures[0] —— 目录里加一个文件下标就全乱了
 		auto findTexture = [&textures](const std::string& name) -> std::shared_ptr<Texture>
@@ -310,37 +348,60 @@ int main()
 		// 用 SetSharedGeometry 让两份数据一起设置，这类错位就不可能发生
 		PrimitiveDesc cubeDesc;                     // 默认就是 Cube / 1.0 / 32 / 16
 		PrimitiveDesc sphereDesc;
+		PrimitiveDesc diablo3Desc;
 		sphereDesc.Type = PrimitiveType::Sphere;    // 其余参数保持默认
-
+		cubeDesc.Type = PrimitiveType::Cube;
+		//obj模型需要自己写加载路径
+		diablo3Desc.Type = PrimitiveType::Obj;
+		const char* diabloPath = "assets/obj/diablo3_pose.obj";
+		diablo3Desc.Path = diabloPath;
 		auto cubeMesh   = std::make_shared<Mesh>(Mesh::Create(cubeDesc));
 		auto sphereMesh = std::make_shared<Mesh>(Mesh::Create(sphereDesc));
+		auto diablo3Mesh = std::make_shared<Mesh>(Mesh::Create(diablo3Desc));
+
+		{
+			RenderObject diablo3;
+			diablo3.Name = "Diablo";
+			diablo3.SetSharedGeometry(diablo3Mesh, diablo3Desc);
+			diablo3.Mat.Diffuse = glm::vec3(1.00f);
+			diablo3.Mat.Specular = glm::vec3(0.50f);
+			diablo3.Mat.Shininess = 32.0f;
+			diablo3.Xform.Position = glm::vec3(-1.0f, -0.45f, 0.0f);
+			diablo3.Xform.Scale = glm::vec3(0.5f);
+			// X = -1.0 是为了避开 (0,0,0) 那个立方体：
+			// 立方体占 ±0.25，模型缩放后占 ±0.38 => -1.38..-0.62，不重叠
+
+			diablo3.Mat.AlbedoTexture = findTexture("diablo3_pose_diffuse");
+			diablo3.Mat.NormalMap = findTexture("diablo3_pose_nm_tangent");
+			diablo3.Mat.GlowMap = findTexture("diablo3_pose_glow");
+
+			scene.AddObject(diablo3);
+		}
 
 		// 【AddObject 是按值传参】cube 会被拷贝进场景，之后这里的 cube 和
 		// scene.GetObject(0) 就是两个对象了。所以设置必须在 Add 之前做完；
 		// 之后改参数一律走 scene.GetObject(i)，否则改的是副本、画面毫无反应
-		{
-			RenderObject cube;
+		//{
+		//	RenderObject cube;
 
-			// 材质参数都是【线性空间】的值。别按美术直觉填灰——
-			// 那是在 sRGB 空间调出来的，放进线性管线会偏暗
-			cube.Name = "Cube-1";
-			cube.SetSharedGeometry(cubeMesh, cubeDesc);
-			cube.Mat.Ambient   = glm::vec3(0.10f);
-			cube.Mat.Diffuse   = glm::vec3(1.00f);
-			cube.Mat.Specular  = glm::vec3(0.50f);
-			cube.Mat.Shininess = 32.0f;
-			cube.Xform.Position = glm::vec3(0.0f, 0.0f, 0.0f);
-			cube.Xform.Scale    = glm::vec3(0.5f);
-			cube.Mat.AlbedoTexture = findTexture("Checkerboard");
+		//	// 材质参数都是【线性空间】的值。别按美术直觉填灰——
+		//	// 那是在 sRGB 空间调出来的，放进线性管线会偏暗
+		//	cube.Name = "Cube-1";
+		//	cube.SetSharedGeometry(cubeMesh, cubeDesc);
+		//	cube.Mat.Diffuse   = glm::vec3(1.00f);
+		//	cube.Mat.Specular  = glm::vec3(0.50f);
+		//	cube.Mat.Shininess = 32.0f;
+		//	cube.Xform.Position = glm::vec3(0.0f, 0.0f, 0.0f);
+		//	cube.Xform.Scale    = glm::vec3(0.5f);
+		//	cube.Mat.AlbedoTexture = findTexture("Checkerboard");
 
-			scene.AddObject(cube);
-		}
+		//	scene.AddObject(cube);
+		//}
 
 		//{
 		//	RenderObject cube;
 		//	cube.Name = "Cube-2";
 		//	cube.SetSharedGeometry(cubeMesh, cubeDesc);   // 同一份几何
-		//	cube.Mat.Ambient   = glm::vec3(0.10f);
 		//	cube.Mat.Diffuse   = glm::vec3(1.00f);
 		//	cube.Mat.Specular  = glm::vec3(0.50f);
 		//	cube.Mat.Shininess = 32.0f;
@@ -354,7 +415,6 @@ int main()
 			RenderObject platform;
 			platform.Name = "Platform-1";
 			platform.SetSharedGeometry(cubeMesh, cubeDesc);
-			platform.Mat.Ambient = glm::vec3(0.10f);
 			platform.Mat.Diffuse = glm::vec3(1.00f);
 			platform.Mat.Specular = glm::vec3(0.50f);
 			platform.Mat.Shininess = 32.0f;
@@ -366,39 +426,37 @@ int main()
 			platform.Mat.AlbedoTexture = nullptr;
 			scene.AddObject(platform);
 		}
-		for (uint32_t x = 0; x < 1; x++)
-		{
-			for (uint32_t y = 0; y <1; y++)
-			{
-				for (uint32_t z = 0; z < 1; z++)
-				{
-					RenderObject sphere;
-					sphere.Name = "Sphere";
-					sphere.SetSharedGeometry(sphereMesh, sphereDesc);
+		//for (uint32_t x = 0; x < 1; x++)
+		//{
+		//	for (uint32_t y = 0; y <1; y++)
+		//	{
+		//		for (uint32_t z = 0; z < 1; z++)
+		//		{
+		//			RenderObject sphere;
+		//			sphere.Name = "Sphere";
+		//			sphere.SetSharedGeometry(sphereMesh, sphereDesc);
 
-					sphere.Mat.Ambient = glm::vec3(0.10f);
-					sphere.Mat.Diffuse = glm::vec3(1.00f);
-					sphere.Mat.Specular = glm::vec3(0.50f);
-					sphere.Mat.Shininess = 32.0f;
-					sphere.Xform.Position = glm::vec3(1.0f+x*0.25f, 0.0f+y*0.25f, 0.0f+z*0.25f);
+		//			sphere.Mat.Diffuse = glm::vec3(1.00f);
+		//			sphere.Mat.Specular = glm::vec3(0.50f);
+		//			sphere.Mat.Shininess = 32.0f;
+		//			sphere.Xform.Position = glm::vec3(1.0f+x*0.25f, 0.0f+y*0.25f, 0.0f+z*0.25f);
 
-					// CreateSphere(1.0) 的半径是 1.0（直径 2）。缩到 0.25 之后直径 0.5，
-					// 正好和 Cube-1（1.0 边长 × 0.5 缩放）一样大
-					sphere.Xform.Scale = glm::vec3(0.1f);
-					sphere.Mat.AlbedoTexture = nullptr;
+		//			// CreateSphere(1.0) 的半径是 1.0（直径 2）。缩到 0.25 之后直径 0.5，
+		//			// 正好和 Cube-1（1.0 边长 × 0.5 缩放）一样大
+		//			sphere.Xform.Scale = glm::vec3(0.1f);
+		//			sphere.Mat.AlbedoTexture = nullptr;
 
-					scene.AddObject(sphere);
+		//			scene.AddObject(sphere);
 
-				}
+		//		}
 
-			}
-		}
+		//	}
+		//}
 		//{
 		//	RenderObject sphere;
 		//	sphere.Name = "Sphere-1";
 		//	sphere.SetSharedGeometry(sphereMesh, sphereDesc);
 
-		//	sphere.Mat.Ambient   = glm::vec3(0.10f);
 		//	sphere.Mat.Diffuse   = glm::vec3(1.00f);
 		//	sphere.Mat.Specular  = glm::vec3(0.50f);
 		//	sphere.Mat.Shininess = 32.0f;

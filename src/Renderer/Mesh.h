@@ -1,6 +1,7 @@
 #pragma once
 #include <vector>
 #include <memory>
+#include <string>
 #include <cstdint>
 #include "Core/Vertex.h"
 #include "Core/PrimitiveDesc.h"
@@ -25,6 +26,7 @@ public:
 	// "我明确知道要什么形状"，比如场景初始化里那几份共享几何
 	static Mesh CreateCube(float size = 1.0f);
 	static Mesh CreateSphere(float radius = 1.0f, uint32_t segments = 32, uint32_t rings = 16);
+	static Mesh CreateFromObjFile(const std::string filepath);
 	std::vector<Vertex>& Vertices() { return m_Vertices; }
 	const std::vector<Vertex>& GetVertices() { return m_Vertices; }
 	const std::vector<uint32_t>& GetIndices() { return m_Indices; }

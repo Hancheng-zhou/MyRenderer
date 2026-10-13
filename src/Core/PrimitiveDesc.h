@@ -30,6 +30,7 @@ enum class PrimitiveType
 {
 	Cube = 0,
 	Sphere = 1,
+	Obj =2,
 };
 
 // 枚举值 → 显示名。
@@ -37,8 +38,8 @@ enum class PrimitiveType
 // 直接以数组形式给出，因为 ImGui 的 Combo 要的就是 const char* 数组。
 // 【下标必须等于枚举值】—— 加形状时枚举和这个数组一起改，
 // 而且都在这一个文件里，不会漏掉另一个文件
-inline constexpr const char* k_PrimitiveTypeNames[] = { "Cube", "Sphere" };
-inline constexpr int         k_PrimitiveTypeCount   = 2;
+inline constexpr const char* k_PrimitiveTypeNames[] = { "Cube", "Sphere","Obj"};
+inline constexpr int         k_PrimitiveTypeCount   = 3;
 
 // 越界安全的取名。枚举和数组哪天不同步了，宁可显示 "Unknown"，
 // 也不要拿越界下标去读内存
@@ -68,6 +69,7 @@ struct PrimitiveDesc
 	uint32_t Segments = 32;   // 经线数：绕 Y 轴一圈切多少份
 	uint32_t Rings    = 16;   // 纬线数：从北极到南极切多少份
 
+	std::string Path;
 	// 【这里用浮点 == 是安全的】这些值只由面板的同一个控件写入，
 	// 不参与任何累加/插值运算，不存在"数学上应相等但浮点上不等"的情况。
 	// 换成"重建后算出来的尺寸"再比较就不能这么写了
@@ -76,7 +78,8 @@ struct PrimitiveDesc
 		return Type == other.Type
 			&& Size == other.Size
 			&& Segments == other.Segments
-			&& Rings == other.Rings;
+			&& Rings == other.Rings
+			&& Path ==other.Path;
 	}
 
 	bool operator!=(const PrimitiveDesc& other) const { return !(*this == other); }

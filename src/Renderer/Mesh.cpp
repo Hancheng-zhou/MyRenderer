@@ -1,15 +1,17 @@
-﻿#include "Mesh.h"
+﻿#include "Renderer/Mesh.h"
 #include <algorithm>   // std::max（生成函数的参数下限保护）
 #include <cmath>       // std::sin / std::cos
 #include <utility>
+#include <cstdio>
 
 // glm::pi<float>() 就在这里。别靠别的头文件间接带进来 ——
 // gtc/constants 不属于 glm/glm.hpp，哪天上面那个间接来源被删掉就找不到符号了
 #include <glm/gtc/constants.hpp>
-#include "IndexBuffer.h"
-#include "VertexBuffer.h"
-#include "VertexArray.h"
-#include "RenderCommand.h"
+#include "Renderer/IndexBuffer.h"
+#include "Renderer/VertexBuffer.h"
+#include "Renderer/VertexArray.h"
+#include "Renderer/RenderCommand.h"
+#include "Core/ObjLoader.h"
 Mesh::Mesh(std::vector<Vertex> vertices, std::vector<uint32_t> indices)
 	:m_Vertices(std::move(vertices)),m_Indices(std::move(indices))
 {
@@ -31,6 +33,8 @@ Mesh Mesh::Create(const PrimitiveDesc& desc)
 
 	case PrimitiveType::Sphere:
 		return CreateSphere(desc.Size, desc.Segments, desc.Rings);
+	case PrimitiveType::Obj:
+		return CreateFromObjFile(desc.Path);
 	}
 
 	// 兜底：枚举加了新值但这里忘了补 case（或者被塞进了越界值）。
@@ -183,6 +187,23 @@ Mesh Mesh::CreateSphere(float radius, uint32_t segments, uint32_t rings)
 		}
 	}
 
+	return Mesh(std::move(vertices), std::move(indices));
+}
+Mesh Mesh::CreateFromObjFile(const std::string filepath)
+{
+	std::vector<Vertex> vertices;
+	std::vector<uint32_t> indices;
+	std::string error;
+
+	if (!LoadObj(filepath, vertices, indices, &error))
+	{
+		std::fprintf(stderr, "[Mesh] obj load failed '%s':%s\n", filepath.c_str(), error.c_str());
+		return CreateCube(1.0f);
+	}
+	std::printf("[Mesh] obj '%s'  verts=%zu  indices=%zu  triangles=%zu\n",
+		filepath.c_str(), vertices.size(), indices.size(), indices.size() / 3);
+
+	// 构造函数里会自动算切线，这里什么都不用补
 	return Mesh(std::move(vertices), std::move(indices));
 }
 void Mesh::SetupBuffers()

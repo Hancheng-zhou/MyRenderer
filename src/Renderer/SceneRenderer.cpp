@@ -37,9 +37,19 @@ void SceneRenderer::PackLights(const Scene& scene)
 		// 在这里记是因为 PackLights 已经做了和着色器一致的过滤；
 		// 换个地方再写一遍过滤逻辑，两处早晚会不一致。
 		//
-		// 【判据必须和 FindShadowLight 一致】（都是 enabled && castShadow）——
-		// 以后如果加了别的过滤条件（按距离剔除之类），两处都要改
-		if (light.castShadow && m_ShadowLightIndex < 0)
+		// 【判据必须和 FindShadowLight 完全一致】
+		//
+		// 这里原先只判了 enabled && castShadow，漏了 FindShadowLight 里的
+		// "必须是平行光"。两处判据一旦分叉，后果是：
+		//     把唯一那盏平行光切成点光（castShadow 仍是 true）
+		//     → 这里照样把 m_ShadowLightIndex 设成 0
+		//     → FindShadowLight 却返回 nullptr（它只认平行光）
+		//     → RenderSceneByPCSS 里 shadowsOn 为 true，去解引用那个 nullptr
+		//     → 【崩】
+		//
+		// 上面那句"两处都要改"的警告正是为这种情况写的，而它自己没做到。
+		// 判据的每一处都要能一眼看出它和 FindShadowLight 是同一件事
+		if (light.castShadow && light.type == LightType::Directional && m_ShadowLightIndex < 0)
 		{
 			m_ShadowLightIndex = static_cast<int>(m_LightTypes.size());
 		}
@@ -131,7 +141,6 @@ glm::mat4 SceneRenderer::ComputeLightSpaceMatrix(const Light& light,
 
 	return proj * view;
 }
-
 void SceneRenderer::RenderShadowPass(const Scene& scene, const FrameBuffer& shadowMap, Shader& depthShader, const RenderSettings& settings)
 {
 	const Light* shadowLight = FindShadowLight(scene);
@@ -156,130 +165,6 @@ void SceneRenderer::RenderShadowPass(const Scene& scene, const FrameBuffer& shad
 	}
 	RenderCommand::SetCullMode(false);
 	shadowMap.Unbind();
-}
-
-void SceneRenderer::RenderSceneByPCF(const Scene& scene,
-                                const FrameBuffer& target,
-								const FrameBuffer& shadowMap,
-                                Shader& shader,
-                                const RenderSettings& settings)
-{
-	// ---- 绑定渲染目标 ----
-	target.Bind();
-
-	// 视口要跟着渲染目标走：绑了 FBO 却还用窗口尺寸设视口，
-	// 画面只会占 FBO 的一角，或者被裁掉一部分
-	RenderCommand::SetViewport(0, 0,
-	                           static_cast<int32_t>(target.GetWidth()),
-	                           static_cast<int32_t>(target.GetHeight()));
-	RenderCommand::Clear();
-
-	// ---- 绑定着色器 ----
-	// 【顺序约束】这一句必须在所有 glUniform* 之前。
-	// glUniform* 作用于"当前绑定的 program"，放到 Bind 之前会设到别的 program 上 ——
-	// 而且不报错，只是静默失效（或污染别人的 uniform）
-	shader.Bind();
-
-	const Camera& camera = scene.GetCamera();
-
-	// 投影 × 视图：相机每帧可能都在动，必须每帧重新上传
-	shader.SetMat4("u_ViewProjection", camera.GetViewProjection());
-	// 相机位置：算高光需要视线方向 V = normalize(cameraPos - worldPos)
-	shader.SetFloat3("u_CameraPos", camera.GetPosition());
-
-	// ---- 光源：整场共享，与具体物体无关，所以放在遍历物体之前 ----
-	PackLights(scene);
-	UploadLights(shader);
-
-	// ---- 阴影：把结果告诉主 shader ----
-	//
-	// 【这里刻意不用 if / else 决定要不要设 uniform】
-	// 两个"状态"uniform 每帧【无条件】设置：
-	//     u_ShadowsEnabled   管开关
-	//     u_ShadowLightIndex 管"阴影作用于哪盏灯"，没找到就是 -1
-	//                        （i 永远 >= 0，所以永远不会匹配上）
-	//
-	// 分成 if / else 容易漏掉一支：uniform 一旦设进 program 就会一直保留，
-	// 漏掉的那一支会让"关掉开关后阴影还在"
-	const Light* shadowLight = FindShadowLight(scene);
-	const bool shadowsOn = settings.ShadowEnabled && (m_ShadowLightIndex >= 0);
-
-	shader.SetInt("u_ShadowsEnabled",   shadowsOn ? 1 : 0);
-	shader.SetInt("u_ShadowLightIndex", m_ShadowLightIndex);
-
-	if (shadowsOn)
-	{
-		// 把 shadow map 绑到纹理单元 1（单元 0 留给漫反射贴图）
-		RenderCommand::BindTexture(shadowMap.GetDepthAttachmentID(), 1);
-		shader.SetInt("u_ShadowMap", 1);
-
-		// 光空间矩阵。
-		// 【必须和 shadow pass 用的是同一个矩阵】—— 这是正确性的前提，
-		// 而这里能保证是因为 ComputeLightSpaceMatrix 是纯函数：
-		// 同样的入参必然给出同样的结果
-		shader.SetMat4("u_LightSpaceMatrix", ComputeLightSpaceMatrix(*shadowLight, settings));
-		
-		shader.SetFloat("u_ShadowBias", settings.ShadowBias);
-		shader.SetInt  ("u_ShadowPCFRadius", settings.FilterRadius);
-	}
-
-
-
-
-	// ---- 逐个物体提交绘制 ----
-	// 从"画一个立方体"到"画一个场景"的分水岭就是这个循环
-	for (const RenderObject& object : scene.GetObjects())
-	{
-		if (!object.Geometry||!object.IsVisible)
-		{
-			continue;   // 只占位、还没挂几何的对象，跳过
-		}
-
-		// 贴图是【每个材质】的资源，每个物体各自绑。
-		//
-		// 槽位固定用 0：一次 draw call 只有一个采样器在采样，
-		// 没理由让槽位号跟着物体编号走 —— 那会白白消耗纹理单元
-		//（GL 只保证 fragment 阶段至少 16 个，超了就静默采样错）
-		if (object.Mat.AlbedoTexture)
-		{
-			object.Mat.AlbedoTexture->Bind(0);
-			shader.SetInt("u_UseTex", 1);
-		}
-		else
-		{
-			// 必须显式关掉：uniform 一旦设进 program 就会一直保留，
-			// 不重设就会残留上一个物体的值
-			shader.SetInt("u_UseTex", 0);
-		}
-		if (object.Mat.NormalMap)
-		{
-			object.Mat.NormalMap->Bind(2);
-			shader.SetInt("u_UseNormalMap", 1);
-		}
-		else
-		{
-			shader.SetInt("u_UseNormalMap", 0);
-		}
-
-
-		// 模型矩阵来自物体自己的 Transform：位置 / 旋转 / 缩放都在里面
-		shader.SetMat4("u_Model", object.Xform.GetModelMatrix());
-
-		// 法线矩阵别偷懒写成 mat3(model)：那只在"旋转 + 均匀缩放"时成立。
-		// 一旦出现非均匀缩放，法线会被拉歪，光照方向整个错掉。
-		// GetNormalMatrix() 内部算的就是 transpose(inverse(mat3(model)))
-		shader.SetMat3("u_NormalMatrix", object.Xform.GetNormalMatrix());
-
-		// 材质是【每个物体】自己的属性，必须紧挨着它的 draw call 设置
-		shader.SetFloat3("u_Ambient",   object.Mat.Ambient);
-		shader.SetFloat3("u_Diffuse",   object.Mat.Diffuse);
-		shader.SetFloat3("u_Specular",  object.Mat.Specular);
-		shader.SetFloat ("u_Shininess", object.Mat.Shininess);
-
-		object.Geometry->Draw();
-	}
-
-	target.Unbind();
 }
 
 void SceneRenderer::RenderSceneByPCSS(const Scene& scene, const FrameBuffer& target, const FrameBuffer& shadowMap, Shader& shader, const RenderSettings& settings)
@@ -308,6 +193,9 @@ void SceneRenderer::RenderSceneByPCSS(const Scene& scene, const FrameBuffer& tar
 	// 相机位置：算高光需要视线方向 V = normalize(cameraPos - worldPos)
 	shader.SetFloat3("u_CameraPos", camera.GetPosition());
 
+	//半球环境光
+	shader.SetFloat3("u_SkyColor", settings.SkyColor);
+	shader.SetFloat3("u_GroundColor", settings.GroundColor);
 	// ---- 光源：整场共享，与具体物体无关，所以放在遍历物体之前 ----
 	PackLights(scene);
 	UploadLights(shader);
@@ -323,7 +211,18 @@ void SceneRenderer::RenderSceneByPCSS(const Scene& scene, const FrameBuffer& tar
 	// 分成 if / else 容易漏掉一支：uniform 一旦设进 program 就会一直保留，
 	// 漏掉的那一支会让"关掉开关后阴影还在"
 	const Light* shadowLight = FindShadowLight(scene);
-	const bool shadowsOn = settings.ShadowEnabled && (m_ShadowLightIndex >= 0);
+
+	// 【第三个条件不能省】
+	//
+	// m_ShadowLightIndex >= 0 只说明"有一盏灯想做阴影"，它【不保证
+	// FindShadowLight 认得它】。而下面真正要解引用的是 shadowLight ——
+	// 所以"能不能取"必须和"取到了什么"写在同一个条件里。
+	//
+	// 这次崩溃的根因是上面那个判据分叉，这一句是让"分叉"再也无法变成
+	// 空指针解引用：即使两处判据将来又走散，也只是"没阴影"，不会崩
+	const bool shadowsOn = settings.ShadowEnabled
+	                    && (m_ShadowLightIndex >= 0)
+	                    && (shadowLight != nullptr);
 
 	shader.SetInt("u_ShadowsEnabled", shadowsOn ? 1 : 0);
 	shader.SetInt("u_ShadowLightIndex", m_ShadowLightIndex);
@@ -384,6 +283,28 @@ void SceneRenderer::RenderSceneByPCSS(const Scene& scene, const FrameBuffer& tar
 			shader.SetInt("u_UseTex", 0);
 		}
 
+		if (object.Mat.NormalMap)
+		{
+			object.Mat.NormalMap->Bind(2);//数字2需要和main中设置纹理槽位一致
+			shader.SetInt("u_UseNormalMap", 1);
+		}
+		else
+		{
+			// 必须显式关掉：uniform 一旦设进 program 就会一直保留，
+			// 不重设就会残留上一个物体的值
+			shader.SetInt("u_UseNormalMap", 0);
+		}
+		if (object.Mat.GlowMap)
+		{
+			object.Mat.GlowMap->Bind(3);
+			shader.SetInt("u_UseGlowMap", 1);
+		}
+		else
+		{
+			shader.SetInt("u_UseGlowMap", 0);
+		}
+
+		shader.SetFloat("u_EmissiveStrength", object.Mat.EmissiveStrength);
 		// 模型矩阵来自物体自己的 Transform：位置 / 旋转 / 缩放都在里面
 		shader.SetMat4("u_Model", object.Xform.GetModelMatrix());
 
@@ -393,7 +314,6 @@ void SceneRenderer::RenderSceneByPCSS(const Scene& scene, const FrameBuffer& tar
 		shader.SetMat3("u_NormalMatrix", object.Xform.GetNormalMatrix());
 
 		// 材质是【每个物体】自己的属性，必须紧挨着它的 draw call 设置
-		shader.SetFloat3("u_Ambient", object.Mat.Ambient);
 		shader.SetFloat3("u_Diffuse", object.Mat.Diffuse);
 		shader.SetFloat3("u_Specular", object.Mat.Specular);
 		shader.SetFloat("u_Shininess", object.Mat.Shininess);

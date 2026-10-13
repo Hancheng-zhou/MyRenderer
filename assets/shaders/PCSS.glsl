@@ -81,6 +81,9 @@ uniform sampler2D u_Texture;
 uniform int u_UseTex;
 uniform sampler2D u_NormalMap;
 uniform int       u_UseNormalMap;   // 0 = 不用法线贴图（和 u_UseTex 同理）
+uniform sampler2D u_GlowMap;
+uniform int u_UseGlowMap;			// 0 = 不用自发光贴图（和 u_UseTex 同理）
+uniform float u_EmissiveStrength;
 
 // ---- 阴影 ----
 uniform int       u_ShadowsEnabled;      // 0 = 完全跳过阴影计算
@@ -98,10 +101,11 @@ uniform vec2 u_PoissonDisk[MAX_POISSON_SAMPLES];
 uniform int  u_PoissonDiskCount;
 
 // 材质参数（都是线性空间的值，不是美术直觉里的 sRGB 灰）
-uniform vec3  u_Ambient;
 uniform vec3  u_Diffuse;
 uniform vec3  u_Specular;
 uniform float u_Shininess;
+uniform vec3 u_SkyColor;
+uniform vec3 u_GroundColor;
 
 //光源参数(多光源)
 const int MAX_LIGHTS = 8;
@@ -313,8 +317,9 @@ void main()
 	if(u_UseTex > 0)
 		baseColor *=texture(u_Texture, v_TexCoord).rgb;
 
-	// 环境光：不依赖任何方向，纯粹为了不让背光面全黑
-	vec3 ambient = u_Ambient * baseColor;
+	//半球 环境光：
+	vec3 irradiance = mix(u_GroundColor,u_SkyColor,N.y*0.5+0.5);
+	vec3 ambient = irradiance * baseColor;
 	vec3 lighting = vec3(0.0);
 	// ---- 阴影：算一次就够 ----
 	//
@@ -369,7 +374,15 @@ void main()
 
 		lighting += contribution;
 	}
-	vec3 finalColor = ambient + lighting;
+	//自发光
+	vec3 emissive = vec3(0.0f);
+	if(u_UseGlowMap != 0)
+	{
+		emissive = texture(u_GlowMap,v_TexCoord).rgb * u_EmissiveStrength;
+	}
+
+
+	vec3 finalColor = ambient + lighting + emissive;
 
 	// 【临时改动：alpha 硬编码成 1.0】原先是 u_Color.a。
 	//

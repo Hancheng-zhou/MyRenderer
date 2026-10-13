@@ -1,13 +1,10 @@
 #include "EditorUI.h"
-
 #include <algorithm>   // std::min / std::max
 #include <cmath>       // std::acos / std::cos
 #include <cstdint>     // uint32_t
 #include <cstdio>      // std::snprintf
-
 #include <imgui.h>
 #include <glm/gtc/type_ptr.hpp>
-
 #include "Core/PrimitiveDesc.h"   // PrimitiveType / k_PrimitiveTypeNames
 #include "Renderer/Camera.h"
 #include "Renderer/FrameBuffer.h"
@@ -145,7 +142,6 @@ void EditorUI::DrawScenePanel(const FrameBuffer& frameBuffer, uint32_t textureId
 		                   frameBuffer.GetWidth(), frameBuffer.GetHeight());
 	}
 	ImGui::Checkbox("Keep aspect ratio", &m_KeepAspectRatio);
-
 	const ImVec2 avail = ImGui::GetContentRegionAvail();
 	if (avail.x > 0.0f && avail.y > 0.0f)
 	{
@@ -522,19 +518,25 @@ void EditorUI::DrawRendererPanel(Scene& scene,
 			//
 			// 这里编辑的是【线性空间】的数值本身，色块看着会比最终画面亮一档，
 			// 判断效果请以 Scene 视口为准
-			ImGui::DragFloat3("Ambient",  glm::value_ptr(material.Ambient),  0.01f);
 			ImGui::DragFloat3("Diffuse",  glm::value_ptr(material.Diffuse),  0.01f);
 			ImGui::DragFloat3("Specular", glm::value_ptr(material.Specular), 0.01f);
 			ImGui::SliderFloat("Shininess", &material.Shininess, 1.0f, 256.0f, "%.0f");
 
 			DrawTexturePicker(textures, material.AlbedoTexture, "Albedo", m_SelectedObject);
 			DrawTexturePicker(textures, material.NormalMap, "Normal", m_SelectedObject);
-
+			DrawTexturePicker(textures, material.GlowMap, "Glow", m_SelectedObject);
+			if (material.GlowMap)
+			{
+				ImGui::SliderFloat("EmissiveStrength", &material.EmissiveStrength, 0.0f, 5.0f, "%.2f");
+			}
 			// 把贴图状态摆出来：一眼看清哪张贴图挂在了哪个物体上
 			ImGui::TextDisabled("Albedo path : %s",
 				material.AlbedoTexture ? material.AlbedoTexture->GetPath().c_str() : "(none)");
 			ImGui::TextDisabled("Normal path : %s",
 				material.NormalMap ? material.NormalMap->GetPath().c_str() : "(none)");
+			ImGui::TextDisabled("Glow path : %s",
+				material.GlowMap ? material.GlowMap->GetPath().c_str() : "(none)");
+
 		}
 	}
 
@@ -544,6 +546,10 @@ void EditorUI::DrawRendererPanel(Scene& scene,
 	//  光源【不属于】任何 RenderObject —— 它照的是整个场景，
 	//  所以单独一节放在物体编辑之后，而不是塞进上面那个下拉框里
 	// -----------------------------------------------------------------------
+	ImGui::Separator();
+	ImGui::TextUnformatted("Ambient (hemisphere)");
+	ImGui::ColorEdit3("Sky", glm::value_ptr(settings.SkyColor));
+	ImGui::ColorEdit3("Ground", glm::value_ptr(settings.GroundColor));
 	if (ImGui::CollapsingHeader("Light", ImGuiTreeNodeFlags_DefaultOpen))
 	{
 		const bool full = scene.GetLightCount() >= Scene::k_MaxLightsCount;
@@ -583,7 +589,25 @@ void EditorUI::DrawRendererPanel(Scene& scene,
 				Light& light = scene.GetLight(i);
 
 				ImGui::Checkbox("Enabled", &light.enabled);
+
+				// 【阴影只支持平行光】（判据见 SceneRenderer::FindShadowLight）
+				//
+				// 点光/聚光的阴影要立方体贴图（6 个面）或透视投影，是另一套
+				// shadow map。不在这里标明的话，"勾了 Shadowcast 却没影子"
+				// 会被当成 bug —— 而它更是"把灯切成点光就崩"那个入口
+				const bool shadowable = (light.type == LightType::Directional);
+				if (!shadowable)
+				{
+					ImGui::BeginDisabled();
+				}
 				ImGui::Checkbox("Shadowcast", &light.castShadow);
+				if (!shadowable)
+				{
+					ImGui::EndDisabled();
+					ImGui::SameLine();
+					ImGui::TextDisabled("(directional only)");
+				}
+
 				int type = static_cast<int>(light.type);
 				const char* k_TypeNames[] = { "Directional", "Point", "Spot" };
 				if (ImGui::Combo("Type", &type, k_TypeNames, IM_ARRAYSIZE(k_TypeNames)))
@@ -679,7 +703,7 @@ void EditorUI::DrawRendererPanel(Scene& scene,
 		// 调大 -> 半影显著变宽；调到接近 0 -> 退化成接近硬边的 PCF。
 		// 用对数刻度：0.005 ~ 0.5 跨两个数量级，线性滑块在小值区间根本拖不动
 		ImGui::SliderFloat("Light size", &settings.ShadowLightSize,
-		                   0.005f, 0.5f, "%.3f", ImGuiSliderFlags_Logarithmic);
+		                   0.005f, 1.5f, "%.3f", ImGuiSliderFlags_Logarithmic);
 
 		// 取景范围：太小 -> 场景有部分落在视锥外、那部分不出阴影；
 		// 太大 -> 深度精度被摊薄，acne 变严重

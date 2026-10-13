@@ -1,5 +1,5 @@
 #pragma once
-
+#include <glm/glm.hpp>
 // ===========================================================================
 //  ZHC - Renderer/RenderSettings.h
 //
@@ -125,6 +125,10 @@ struct RenderSettings
 	float FxaaEdgeThresholdMin = 0.0312f;
 	// 只显示"边界掩码"，用来确认 FXAA 到底在哪些地方动手
 	int DebugEdges = 0;
+	// ------环境光 ------
+	glm::vec3 SkyColor = glm::vec3(0.12f, 0.14f, 0.18f);
+	glm::vec3 GroundColor = glm::vec3(0.06f, 0.055f, 0.05f);
+
 
 	// =======================================================================
 	//  调试图层
